@@ -1,0 +1,39 @@
+{
+    "camera": {
+        "video_source": "2rtsp://admin:proeffico23@103.117.15.75:8131/cam/realmonitor?channel=10&subtype=0",
+        "line_coords": [[1422, 13], [1034, 1065]],
+        "headless": true
+    },
+    "api": {
+        "endpoint": "https://your.api/endpoint",
+        "upload_image": "https://obs.prolificapp.in/uploadFile",
+        "report_incident": "https://api.prolificapp.in/api/Addprolificai_alerts",
+        "upload_api_key": "vizo361"
+    },
+    "logging": {
+        "log_file": "interaction_log.txt",
+        "log_level": "INFO",
+        "debug_summary_every_n_frames": 50
+    },
+    "video_processing": {
+        "segment_path": "segments/",
+        "unattended_segment_path": "segments_unattended/",
+        "segment_duration": 900,
+        "upload_only_interaction_videos": true,
+        "keep_all_videos_locally": true
+    },
+    "detection": {
+        "yolo_model_path": "yolov8n.pt"
+    },
+    "interaction_settings": {
+        "min_interaction_duration": 20.0,
+        "interaction_threshold": 500,
+        "unattended_threshold": 30.0,
+        "min_tracking_duration_for_alert": 600.0
+    },
+    "organization": {
+        "name": "ProSmnppl Organization",
+        "branch_id": "Proeffico",
+        "location": "main_entrance"
+    }
+}

@@ -1,0 +1,9 @@
+opencv-python==4.10.0.84
+ultralytics==8.3.58
+supervision==0.25.0
+lap==0.4.0
+requests==2.32.3
+numpy==1.26.4
+scipy==1.11.4
+# ByteTrack tracking
+filterpy==1.4.5
