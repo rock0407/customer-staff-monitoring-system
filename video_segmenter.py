@@ -20,6 +20,7 @@ class VideoSegmenter:
         self.has_interactions = False  # Track if current segment has interactions
         self.interaction_count = 0     # Count interactions in current segment
         self.has_unattended = False    # Track unattended presence in current segment
+        self._unattended_since = None  # When unattended first seen within this segment
         self.segment_file = None
         # Don't start a segment immediately - wait for first frame
 
@@ -61,6 +62,7 @@ class VideoSegmenter:
         self.has_interactions = False
         self.interaction_count = 0
         self.has_unattended = False
+        self._unattended_since = None
         self.segment_idx += 1
         
         logging.info(f"🎬 Started new segment: {os.path.basename(filename)}")
@@ -86,7 +88,14 @@ class VideoSegmenter:
                 self.interaction_count = max(self.interaction_count, len(active_interactions))
         # Track unattended presence
         if unattended_present:
-            self.has_unattended = True
+            if not self.has_unattended:
+                self.has_unattended = True
+                self._unattended_since = time.time()
+            # Optionally finalize early to ensure unattended evidence saved promptly
+            if self._unattended_since and (time.time() - self._unattended_since) >= 5:
+                logging.info("⏲️ Unattended detected – finalizing current segment early to save evidence")
+                self.finalize_segment()
+                self._start_new_segment()
         
         # Check if segment duration is reached
         if time.time() - self.segment_start_time >= SEGMENT_DURATION:
@@ -156,10 +165,7 @@ class VideoSegmenter:
                     except Exception as e:
                         logging.error(f"❌ Error handling unattended customer segment: {e}")
                 
-                # Handle interaction segments
-                elif self.has_interactions:
-                    logging.info(f"📤 Segment contains {self.interaction_count} interactions - sending to API")
-                    self.send_to_api(self.segment_file)
+                # Do NOT upload interaction-only segments; keep locally
                 else:
                     logging.info("⏭️  Segment has no interactions or unattended customers - keeping locally only")
 

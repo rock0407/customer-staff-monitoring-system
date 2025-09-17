@@ -60,10 +60,10 @@ class PersonTrackerBYTE:
         """
         import logging
 
-        if boxes is None or len(boxes) == 0:
-            # Still step tracker with empty detections
-            self.tracker.update([], (frame.shape[0], frame.shape[1]), (frame.shape[0], frame.shape[1]))
-            return []
+        if boxes is None:
+            boxes = np.zeros((0, 4), dtype=float)
+        if confidences is None:
+            confidences = np.zeros((0,), dtype=float)
 
         # Build data once
         xyxy_list, conf_list, cls_list = [], [], []
@@ -101,21 +101,21 @@ class PersonTrackerBYTE:
         detections_nd = np.hstack([xyxy_arr, conf_arr.reshape(-1, 1), cls_arr.reshape(-1, 1)]) if xyxy_arr.size else np.zeros((0, 6), dtype=float)
 
         update_result = None
-        # Try root-level fields
+        # Prefer ndarray Nx6 first (most version-agnostic)
         try:
-            update_result = self.tracker.update(detections_root, (H, W), (H, W))
+            update_result = self.tracker.update(detections_nd, (H, W), (H, W))
         except Exception:
             update_result = None
-        # Try boxes-level fields
+        # Fallback to boxes-level fields
         if update_result is None:
             try:
                 update_result = self.tracker.update(detections_boxes, (H, W), (H, W))
             except Exception:
                 update_result = None
-        # Try ndarray Nx6 [x1,y1,x2,y2,conf,cls]
+        # Fallback to root-level fields
         if update_result is None:
             try:
-                update_result = self.tracker.update(detections_nd, (H, W), (H, W))
+                update_result = self.tracker.update(detections_root, (H, W), (H, W))
             except Exception as e:
                 logging.debug(f"BYTETracker update error: {e}. Returning empty tracks.")
                 return []

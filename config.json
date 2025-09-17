@@ -1,8 +1,8 @@
 {
     "camera": {
-        "video_source": "2rtsp://admin:proeffico23@103.117.15.75:8131/cam/realmonitor?channel=10&subtype=0",
-        "line_coords": [[1422, 13], [1034, 1065]],
-        "headless": true
+        "video_source": "rtsp://admin:admin123@100.111.255.17:554/cam/realmonitor?channel=2&subtype=0",
+        "line_coords": [[632, 448], [738, 919]],
+        "headless": false
     },
     "api": {
         "endpoint": "https://your.api/endpoint",
@@ -18,7 +18,7 @@
     "video_processing": {
         "segment_path": "segments/",
         "unattended_segment_path": "segments_unattended/",
-        "segment_duration": 900,
+        "segment_duration": 120,
         "upload_only_interaction_videos": true,
         "keep_all_videos_locally": true
     },
@@ -27,13 +27,13 @@
     },
     "interaction_settings": {
         "min_interaction_duration": 20.0,
-        "interaction_threshold": 500,
-        "unattended_threshold": 30.0,
-        "min_tracking_duration_for_alert": 600.0
+        "interaction_threshold": 350,
+        "unattended_threshold": 600.0,
+        "min_tracking_duration_for_alert": 120.0
     },
     "organization": {
-        "name": "ProSmnppl Organization",
-        "branch_id": "Proeffico",
+        "name": "Mart77&93",
+        "branch_id": "MM75",
         "location": "main_entrance"
     }
 }

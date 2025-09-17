@@ -173,7 +173,7 @@ logging.warning(f"📊 Interaction logger initialized (min duration: {MIN_INTERA
 video_segmenter = VideoSegmenter(fps=int(fps), frame_size=(frame_w, frame_h))
 logging.warning("🎥 Video segmenter initialized")
 
-start_time = time.time()
+start_time = time.monotonic()
 frame_count = 0
 total_people_detected = 0
 
@@ -195,15 +195,23 @@ while running:
         continue
     
     frame_count += 1
-    frame_time = time.time() - start_time
+    frame_time = time.monotonic() - start_time
 
-    # 3. Detect people
-    boxes, confs = person_detector.detect(frame)
+    # 3. Detect people (robust to detector API changes)
+    try:
+        boxes, confs = person_detector.detect(frame)
+    except Exception as e:
+        logging.error(f"Detector error: {e}. Skipping detections this frame.")
+        boxes, confs = np.zeros((0,4), dtype=float), np.zeros((0,), dtype=float)
     if len(boxes) > 0:
         logging.debug(f"Frame {frame_count}: Detected {len(boxes)} people")
     
-    # 4. Track people
-    tracks = person_tracker.update(boxes, confs, frame)
+    # 4. Track people (guard against tracker exceptions)
+    try:
+        tracks = person_tracker.update(boxes, confs, frame)
+    except Exception as e:
+        logging.error(f"Tracker update error: {e}. Using empty tracks this frame.")
+        tracks = []
     # Safety net: if tracker yields no tracks but we have detections, display detections
     display_tracks = tracks
     if (not tracks) and len(boxes) > 0:

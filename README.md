@@ -31,10 +31,7 @@ This software processes video or live RTSP streams to:
 - Uses Kalman filtering for prediction
 - Lighter computational requirements
 
-**To switch trackers**: Edit `TRACKER_TYPE` in `config.py`:
-```python
-TRACKER_TYPE = 'deepsort'  # or 'sort'
-```
+Configuration is managed in `config.json` and loaded by `config_loader.py`.
 
 ## Quick Start
 
@@ -52,12 +49,15 @@ python setup_line.py
 - Copy the coordinates to `config.py`
 
 ### 3. Configure
-Edit `config.py`:
-```python
-VIDEO_SOURCE = 'your_video.mp4'  # or RTSP URL
-LINE_COORDS = ((x1, y1), (x2, y2))  # from setup_line.py
-HEADLESS = False  # True for server mode
-TRACKER_TYPE = 'deepsort'  # or 'sort'
+Edit `config.json` (examples shown in file):
+```json
+{
+  "camera": {
+    "video_source": "your_video.mp4",
+    "line_coords": [[x1, y1], [x2, y2]],
+    "headless": false
+  }
+}
 ```
 
 ### 4. Run
@@ -71,7 +71,7 @@ acsi/
 ├── main.py              # Main application
 ├── run.py               # Runner with config checks
 ├── setup_line.py        # Line coordinate setup tool
-├── config.py            # Configuration
+├── config.json          # Configuration
 ├── detector.py          # Person detection (YOLOv8)
 ├── tracker.py           # DeepSORT tracking
 ├── tracker_sort.py      # SORT tracking (alternative)
@@ -90,24 +90,10 @@ acsi/
 ## Usage Modes
 
 ### Development Mode (with GUI)
-```bash
-# In config.py
-HEADLESS = False
-LINE_COORDS = None  # or your coordinates
-
-# Run
-python run.py
-```
+Set `camera.headless` to false in `config.json`, then run `python run.py`.
 
 ### Server Mode (Headless)
-```bash
-# In config.py
-HEADLESS = True
-LINE_COORDS = ((x1, y1), (x2, y2))
-
-# Run
-python run.py
-```
+Set `camera.headless` to true and provide `line_coords` in `config.json`, then run `python run.py`.
 
 ## Configuration Options
 
@@ -123,8 +109,8 @@ python run.py
 - **DeepSORT** (recommended): `TRACKER_TYPE = 'deepsort'`
 - **SORT** (faster): `TRACKER_TYPE = 'sort'`
 
-### API Endpoint
-- Set `API_ENDPOINT` in `config.py` for video segment uploads
+### API Endpoints
+- Configure under `api.*` in `config.json`.
 
 ## Output Files
 
