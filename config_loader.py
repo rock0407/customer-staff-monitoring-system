@@ -47,11 +47,20 @@ KEEP_ALL_VIDEOS_LOCALLY = config['video_processing']['keep_all_videos_locally']
 # Detection configuration
 YOLO_MODEL_PATH = config['detection']['yolo_model_path']
 
+# Tracking settings
+TRACK_THRESH = config['tracking']['track_thresh']
+TRACK_BUFFER = config['tracking']['track_buffer']
+MATCH_THRESH = config['tracking']['match_thresh']
+TRACKING_FRAME_RATE = config['tracking']['frame_rate']
+ENABLE_TRACKING_STATS = config['tracking']['enable_tracking_stats']
+
 # Interaction settings
 MIN_INTERACTION_DURATION = config['interaction_settings']['min_interaction_duration']
 INTERACTION_THRESHOLD = config['interaction_settings']['interaction_threshold']
 UNATTENDED_THRESHOLD = config['interaction_settings']['unattended_threshold']
 MIN_TRACKING_DURATION_FOR_ALERT = config['interaction_settings']['min_tracking_duration_for_alert']
+UNATTENDED_CONFIRMATION_TIMER = config['interaction_settings']['unattended_confirmation_timer']
+TIMER_RESET_GRACE_PERIOD = config['interaction_settings']['timer_reset_grace_period']
 
 # Organization information
 ORGANIZATION_NAME = config['organization']['name']

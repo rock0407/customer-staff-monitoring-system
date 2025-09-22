@@ -6,9 +6,11 @@ import logging
 import csv
 from config_loader import (VIDEO_SOURCE, LINE_COORDS, HEADLESS, MIN_INTERACTION_DURATION, 
                    INTERACTION_THRESHOLD, LOG_LEVEL, DEBUG_SUMMARY_EVERY_N_FRAMES, UNATTENDED_THRESHOLD,
-                   MIN_TRACKING_DURATION_FOR_ALERT, ORGANIZATION_NAME, BRANCH_ID, LOCATION)
+                   MIN_TRACKING_DURATION_FOR_ALERT, ORGANIZATION_NAME, BRANCH_ID, LOCATION, UNATTENDED_CONFIRMATION_TIMER,
+                   TRACK_THRESH, TRACK_BUFFER, MATCH_THRESH, TRACKING_FRAME_RATE, ENABLE_TRACKING_STATS)
 from detector import PersonDetector
 from tracker_bytetrack import PersonTrackerBYTE
+from tracker_simple import SimpleTracker
 from line_drawer import LineDrawer
 from interaction import InteractionLogger
 from video_segmenter import VideoSegmenter
@@ -123,6 +125,55 @@ def draw_interaction_line(img, pt1, pt2, color=(0, 255, 255), thickness=2):
     cv2.circle(img, pt1, 3, color, -1)
     cv2.circle(img, pt2, 3, color, -1)
 
+def _add_customer_timer_overlays(frame, customers, interaction_logger, frame_time):
+    """Add visual timer overlays for each customer showing unattended duration."""
+    for cid, cpt, cbbox in customers:
+        # Get customer timing information
+        if cid in interaction_logger.customer_last_attended:
+            last_attended = interaction_logger.customer_last_attended[cid]
+            unattended_duration = frame_time - last_attended
+            
+            # Only show timer if customer has been unattended for threshold time
+            if unattended_duration >= UNATTENDED_THRESHOLD:
+                # Get timer status
+                timer_status = interaction_logger.get_unattended_timer_status(cid)
+                
+                # Calculate position for timer display (above customer)
+                timer_x = cpt[0]
+                timer_y = cpt[1] - 20
+                
+                # Determine timer color and text based on status
+                if timer_status['is_confirmed']:
+                    # Confirmed unattended - RED
+                    timer_color = (0, 0, 255)  # Red
+                    bg_color = (0, 0, 0)  # Black background
+                    timer_text = f"C{cid}: CONFIRMED UNATTENDED"
+                elif timer_status['timer_started']:
+                    # In confirmation period - ORANGE
+                    timer_duration = frame_time - timer_status['timer_start_time']
+                    remaining_time = UNATTENDED_CONFIRMATION_TIMER - timer_duration
+                    timer_color = (0, 165, 255)  # Orange
+                    bg_color = (0, 0, 0)  # Black background
+                    timer_text = f"C{cid}: Pending ({remaining_time:.1f}s)"
+                else:
+                    # Just started being unattended - YELLOW
+                    timer_color = (0, 255, 255)  # Yellow
+                    bg_color = (0, 0, 0)  # Black background
+                    timer_text = f"C{cid}: Unattended ({unattended_duration:.1f}s)"
+                
+                # Draw timer text with background
+                draw_text_with_background(frame, timer_text, (timer_x, timer_y), 
+                                       font_scale=0.5, color=timer_color, bg_color=bg_color)
+                
+                # Draw a colored circle around the customer
+                circle_radius = 15
+                cv2.circle(frame, cpt, circle_radius, timer_color, 3)
+                
+                # Add total unattended time below
+                total_time_text = f"Total: {unattended_duration:.1f}s"
+                draw_text_with_background(frame, total_time_text, (timer_x, timer_y + 20), 
+                                       font_scale=0.4, color=timer_color, bg_color=bg_color)
+
 cap = open_video()
 if cap is None:
     sys.exit(1)
@@ -160,13 +211,55 @@ else:
     print(f"Copy these coordinates to config_loader.py as LINE_COORDS = {result}")
     logging.warning(f"📍 Line drawn: {line_pts[0]} to {line_pts[1]}")
 
-# 2. Initialize modules
+# 2. Validate configuration and initialize modules
+def validate_config():
+    """Validate critical configuration parameters."""
+    issues = []
+    
+    if UNATTENDED_CONFIRMATION_TIMER <= 0:
+        issues.append("UNATTENDED_CONFIRMATION_TIMER must be positive")
+    if UNATTENDED_THRESHOLD <= 0:
+        issues.append("UNATTENDED_THRESHOLD must be positive")
+    if MIN_TRACKING_DURATION_FOR_ALERT <= 0:
+        issues.append("MIN_TRACKING_DURATION_FOR_ALERT must be positive")
+    if INTERACTION_THRESHOLD <= 0:
+        issues.append("INTERACTION_THRESHOLD must be positive")
+    if MIN_INTERACTION_DURATION <= 0:
+        issues.append("MIN_INTERACTION_DURATION must be positive")
+    
+    if issues:
+        logging.error("❌ Configuration validation failed:")
+        for issue in issues:
+            logging.error(f"   - {issue}")
+        return False
+    
+    logging.info("✅ Configuration validation passed")
+    return True
+
+if not validate_config():
+    logging.error("❌ Invalid configuration, exiting")
+    sys.exit(1)
+
 person_detector = PersonDetector()
 logging.warning("🔍 Person detector initialized")
 
-# Initialize ByteTrack tracker
-person_tracker = PersonTrackerBYTE()
-logging.warning('🎯 Using ByteTrack tracker for persistent tracking')
+# Initialize tracker with fallback to simple tracker
+try:
+    person_tracker = PersonTrackerBYTE(
+        track_thresh=TRACK_THRESH,
+        track_buffer=TRACK_BUFFER,
+        match_thresh=MATCH_THRESH,
+        frame_rate=TRACKING_FRAME_RATE
+    )
+    logging.warning('🎯 Using optimized ByteTrack tracker for persistent tracking')
+except Exception as e:
+    logging.warning(f'⚠️ ByteTracker failed to initialize: {e}')
+    logging.warning('🔄 Falling back to SimpleTracker')
+    person_tracker = SimpleTracker(
+        iou_threshold=0.3,
+        max_disappeared=30,
+        max_distance=100.0
+    )
 
 interaction_logger = InteractionLogger(min_duration=MIN_INTERACTION_DURATION, threshold=INTERACTION_THRESHOLD)
 logging.warning(f"📊 Interaction logger initialized (min duration: {MIN_INTERACTION_DURATION}s, threshold: {INTERACTION_THRESHOLD}px)")
@@ -200,17 +293,22 @@ while running:
     # 3. Detect people (robust to detector API changes)
     try:
         boxes, confs = person_detector.detect(frame)
+        if len(boxes) > 0:
+            logging.debug(f"Frame {frame_count}: Detected {len(boxes)} people")
     except Exception as e:
         logging.error(f"Detector error: {e}. Skipping detections this frame.")
         boxes, confs = np.zeros((0,4), dtype=float), np.zeros((0,), dtype=float)
-    if len(boxes) > 0:
-        logging.debug(f"Frame {frame_count}: Detected {len(boxes)} people")
     
     # 4. Track people (guard against tracker exceptions)
     try:
         tracks = person_tracker.update(boxes, confs, frame)
     except Exception as e:
         logging.error(f"Tracker update error: {e}. Using empty tracks this frame.")
+        tracks = []
+    
+    # Validate tracks data structure
+    if not isinstance(tracks, list):
+        logging.warning("⚠️ Tracker returned invalid data type, converting to list")
         tracks = []
     # Safety net: if tracker yields no tracks but we have detections, display detections
     display_tracks = tracks
@@ -227,28 +325,39 @@ while running:
     customers = []
     active_interactions = interaction_logger.get_active_interactions()
     
-    # 5. Classify by line for LOGIC using true tracker outputs
+    # 5. Process tracks once: classify, draw, and add to staff/customer lists
     for track in tracks:
         tid = track['id']
         xyxy = track['xyxy'].astype(int)
+        
+        # Calculate center coordinates once
         cx = int((xyxy[0] + xyxy[2]) / 2)
         cy = int((xyxy[1] + xyxy[3]) / 2)
         
-        # Use the same logic as before
+        # Classify based on line position
         (x1, y1), (x2, y2) = line_pts
         side = (x2 - x1)*(cy - y1) - (y2 - y1)*(cx - x1)
         
         if side > 0:
-            staff.append((tid, (cx, cy), xyxy))  # Include bounding box
+            staff.append((tid, (cx, cy), xyxy))
             color = (255, 0, 0)  # Red for staff
-            label = f'Staff {tid}'
-            category = "STAFF"
+            label = f"S{tid}"
         else:
-            customers.append((tid, (cx, cy), xyxy))  # Include bounding box
-            color = (0, 255, 255)  # Yellow for customers
-            label = f'Cust {tid}'
-            category = "CUSTOMER"
-    # If tracker produced no tracks but detections exist, fall back to detections for logic
+            customers.append((tid, (cx, cy), xyxy))
+            color = (0, 255, 255)  # Cyan for customers
+            label = f"C{tid}"
+        
+        # Draw person indicator (small dot and label)
+        cv2.circle(frame, (cx, cy), 4, color, -1)
+        draw_text_with_background(frame, f"{label}", (cx+8, cy-8), color=color, bg_color=(0, 0, 0), font_scale=0.5)
+        
+        # Show interaction indicator if in active interaction
+        for (sid, cid) in active_interactions:
+            if tid == sid or tid == cid:
+                cv2.circle(frame, (cx, cy), 10, (0, 255, 0), 2)
+                break
+    
+    # Fallback: if no tracks, use detections for classification only (no drawing)
     if len(staff) == 0 and len(customers) == 0 and display_tracks:
         logging.debug("Tracker returned 0 tracks; falling back to detections for logic this frame.")
         for track in display_tracks:
@@ -262,24 +371,6 @@ while running:
                 staff.append((tid, (cx, cy), xyxy))
             else:
                 customers.append((tid, (cx, cy), xyxy))
-        
-    # Draw pass can use fallback display_tracks for visualization only (no logic)
-    for track in display_tracks:
-        tid = track['id']
-        xyxy = np.array(track['xyxy']).astype(int)
-        cx = int((xyxy[0] + xyxy[2]) / 2)
-        cy = int((xyxy[1] + xyxy[3]) / 2)
-        (x1, y1), (x2, y2) = line_pts
-        side = (x2 - x1)*(cy - y1) - (y2 - y1)*(cx - x1)
-        color = (255, 0, 0) if side > 0 else (0, 255, 255)
-        label = f"Staff {tid}" if side > 0 else f"Cust {tid}"
-        cv2.rectangle(frame, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), color, 2)
-        draw_text_with_background(frame, f"{label}", (xyxy[0], xyxy[1]-10), color=color, bg_color=(0, 0, 0))
-        cv2.circle(frame, (cx, cy), 4, color, -1)
-        for (sid, cid) in active_interactions:
-            if tid == sid or tid == cid:
-                cv2.circle(frame, (cx, cy), 8, (0, 255, 0), 2)
-                break
 
     # Log bounding box information for staff and customers
     if len(staff) > 0 or len(customers) > 0:
@@ -309,20 +400,36 @@ while running:
         draw_text_with_background(frame, "CUSTOMER AREA", (mid_x-50, mid_y+20), 
                                  color=(0, 255, 255), bg_color=(0, 0, 0))
 
-    # 6. Interaction detection and logging (now returns unattended IDs)
-    interactions_frame, unattended_ids = interaction_logger.check_and_log(staff, customers, frame_time)
+    # 6. Interaction detection and logging (now returns unattended IDs and confirmed unattended)
+    interactions_frame, unattended_ids, confirmed_unattended_ids = interaction_logger.check_and_log(staff, customers, frame_time)
     active_interactions = interaction_logger.get_active_interactions()
     
-    # No immediate face/image alerts – segments with unattended will be reported upon finalization
+    # Enhanced logging for timer-based system
     if unattended_ids:
-        logging.info(f"📹 Segment flagged for unattended customers: {len(unattended_ids)}")
+        confirmed_count = len(confirmed_unattended_ids)
+        pending_count = len(unattended_ids) - confirmed_count
+        logging.info(f"📹 Unattended customers: {confirmed_count} confirmed, {pending_count} pending confirmation")
     
-    # Draw unattended customers indicator
+    # Draw unattended customers with different indicators (no bounding boxes, just status)
     if unattended_ids:
         for cid, pos, bbox in customers:
             if cid in unattended_ids:
-                cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 2)
-                draw_text_with_background(frame, f"Unattended {cid}", (bbox[0], bbox[1]-25), color=(255,255,255), bg_color=(0,0,255))
+                if cid in confirmed_unattended_ids:
+                    # Confirmed unattended - show red status indicator
+                    cv2.circle(frame, pos, 15, (0, 0, 255), -1)  # Red filled circle
+                    cv2.circle(frame, pos, 20, (0, 0, 255), 2)   # Red border
+                    draw_text_with_background(frame, f"CONFIRMED {cid}", (pos[0]-30, pos[1]-30), 
+                                           color=(255,255,255), bg_color=(0,0,255))
+                else:
+                    # Pending confirmation - show orange status indicator
+                    cv2.circle(frame, pos, 12, (0, 165, 255), -1)  # Orange filled circle
+                    cv2.circle(frame, pos, 17, (0, 165, 255), 2)   # Orange border
+                    # Show countdown timer
+                    timer_status = interaction_logger.get_unattended_timer_status(cid)
+                    if timer_status['timer_started']:
+                        remaining_time = UNATTENDED_CONFIRMATION_TIMER - (frame_time - timer_status['timer_start_time'])
+                        draw_text_with_background(frame, f"Pending {cid} ({remaining_time:.0f}s)", (pos[0]-40, pos[1]-30), 
+                                               color=(255,255,255), bg_color=(0,165,255))
     
     # Draw active interaction lines with enhanced information
     for (sid, cid) in active_interactions:
@@ -399,22 +506,24 @@ while running:
                 draw_text_with_background(frame, score_text, (mid_x, mid_y), 
                                          color=line_color, bg_color=(0, 0, 0), font_scale=0.4)
 
-    # 7. Add status overlay
+    # 7. Add visual timer overlays for each customer
+    _add_customer_timer_overlays(frame, customers, interaction_logger, frame_time)
+    
+    # 8. Add status overlay with timer information
     # Get current segment info for display
     segment_info = video_segmenter.get_current_segment_info()
     
+    # Calculate timer status
+    confirmed_count = len(confirmed_unattended_ids) if 'confirmed_unattended_ids' in locals() else 0
+    pending_count = len(unattended_ids) - confirmed_count if 'unattended_ids' in locals() else 0
+    
     status_text = [
-        f"Frame: {frame_count}",
-        f"Time: {frame_time:.1f}s",
-        f"Staff: {len(staff)}",
-        f"Customers: {len(customers)}",
-        f"Active Interactions: {len(active_interactions)}",
+        f"Frame: {frame_count} | Time: {frame_time:.1f}s",
+        f"Staff: {len(staff)} | Customers: {len(customers)} | Interactions: {len(active_interactions)}",
+        f"Unattended: {confirmed_count} confirmed, {pending_count} pending",
         f"Segment: {segment_info['segment_idx']} ({segment_info['duration']:.1f}s)",
-        f"Interactions in Segment: {segment_info['interaction_count']}",
-        f"Interaction Threshold: {INTERACTION_THRESHOLD}px",
-        f"Min Duration: {MIN_INTERACTION_DURATION}s",
-        f"Min Tracking for Alert: {MIN_TRACKING_DURATION_FOR_ALERT/60:.1f}min",
-        f"Unattended: {len(unattended_ids)}"
+        f"Timer: {UNATTENDED_CONFIRMATION_TIMER}s confirmation",
+        f"Threshold: {UNATTENDED_THRESHOLD}s unattended"
     ]
     
     y_offset = 30
@@ -425,10 +534,28 @@ while running:
 
     # Periodic debug snapshot for diagnosis
     if frame_count % max(1, int(DEBUG_SUMMARY_EVERY_N_FRAMES)) == 0:
+        # Calculate processing performance
+        elapsed_time = time.monotonic() - start_time
+        fps_actual = frame_count / elapsed_time if elapsed_time > 0 else 0
+        
         logging.info(
             f"📌 Snapshot f={frame_count} t={frame_time:.1f}s staff={len(staff)} cust={len(customers)} "
-            f"active={len(active_interactions)} unattended={len(unattended_ids)}"
+            f"active={len(active_interactions)} unattended={len(unattended_ids)} fps={fps_actual:.1f}"
         )
+        
+        # Memory usage warning
+        import psutil
+        memory_percent = psutil.virtual_memory().percent
+        if memory_percent > 80:
+            logging.warning(f"⚠️ High memory usage: {memory_percent:.1f}%")
+        
+        # Tracking performance monitoring
+        if ENABLE_TRACKING_STATS:
+            tracking_stats = person_tracker.get_tracking_stats()
+            if tracking_stats:
+                logging.info(f"🎯 Tracking Performance: "
+                           f"Efficiency: {tracking_stats.get('track_efficiency', 0):.2f}, "
+                           f"Avg Tracks/Frame: {tracking_stats.get('avg_tracks_per_frame', 0):.1f}")
 
     # 8. Save video segment with interaction info
     # Only mark segment as having interactions when any pair exceeds MIN_INTERACTION_DURATION
@@ -441,7 +568,15 @@ while running:
                     break
             except Exception:
                 continue
-    video_segmenter.add_frame(frame, active_interactions, any_met_duration, unattended_present=len(unattended_ids) > 0)
+    
+    # Get timing details for incident reporting
+    timing_details = interaction_logger.get_detailed_timing_info(frame_time)
+    video_segmenter.set_unattended_timing_details(timing_details)
+    
+    # Pass confirmed unattended customers to video segmenter
+    video_segmenter.add_frame(frame, active_interactions, any_met_duration, 
+                            unattended_present=len(unattended_ids) > 0, 
+                            confirmed_unattended_present=len(confirmed_unattended_ids) > 0)
 
     # 9. Optionally show live video if not headless
     if not HEADLESS:
@@ -449,11 +584,28 @@ while running:
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
-# Finalize last segment
-video_segmenter.finalize_segment()
-cap.release()
+# Graceful shutdown
+logging.info("🛑 Shutting down CSI system...")
+
+try:
+    # Finalize last segment
+    video_segmenter.finalize_segment()
+    logging.info("✅ Video segmenter finalized")
+except Exception as e:
+    logging.error(f"❌ Error finalizing video segmenter: {e}")
+
+try:
+    cap.release()
+    logging.info("✅ Video capture released")
+except Exception as e:
+    logging.error(f"❌ Error releasing video capture: {e}")
+
 if not HEADLESS:
-    cv2.destroyAllWindows()
+    try:
+        cv2.destroyAllWindows()
+        logging.info("✅ OpenCV windows closed")
+    except Exception as e:
+        logging.error(f"❌ Error closing OpenCV windows: {e}")
 
 logging.info(f"📊 Processing complete: {frame_count} frames processed")
-logging.info('ACSI stopped.') 
+logging.info('ACSI stopped gracefully.') 

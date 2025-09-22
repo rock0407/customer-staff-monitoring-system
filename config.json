@@ -1,7 +1,7 @@
 {
     "camera": {
-        "video_source": "rtsp://admin:admin123@100.111.255.17:554/cam/realmonitor?channel=2&subtype=0",
-        "line_coords": [[632, 448], [738, 919]],
+        "video_source": "rtsp://admin:admin1234567@100.111.167.58:554/cam/realmonitor?channel=4&subtype=0",
+        "line_coords": [[1081, 1031], [1018, 221]],
         "headless": false
     },
     "api": {
@@ -25,15 +25,24 @@
     "detection": {
         "yolo_model_path": "yolov8n.pt"
     },
+  "tracking": {
+    "track_thresh": 0.3,
+    "track_buffer": 30,
+    "match_thresh": 0.5,
+    "frame_rate": 30,
+    "enable_tracking_stats": true
+  },
     "interaction_settings": {
-        "min_interaction_duration": 20.0,
-        "interaction_threshold": 350,
-        "unattended_threshold": 600.0,
-        "min_tracking_duration_for_alert": 120.0
+        "min_interaction_duration": 15.0,
+        "interaction_threshold": 650,
+        "unattended_threshold": 30.0,
+        "min_tracking_duration_for_alert": 120.0,
+        "unattended_confirmation_timer": 60.0,
+        "timer_reset_grace_period": 30.0
     },
     "organization": {
         "name": "Mart77&93",
-        "branch_id": "MM75",
+        "branch_id": "MMLAUREL",
         "location": "main_entrance"
     }
 }

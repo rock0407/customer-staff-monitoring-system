@@ -20,6 +20,7 @@ class VideoSegmenter:
         self.has_interactions = False  # Track if current segment has interactions
         self.interaction_count = 0     # Count interactions in current segment
         self.has_unattended = False    # Track unattended presence in current segment
+        self.has_confirmed_unattended = False  # Track confirmed unattended presence in current segment
         self._unattended_since = None  # When unattended first seen within this segment
         self.segment_file = None
         # Don't start a segment immediately - wait for first frame
@@ -62,112 +63,196 @@ class VideoSegmenter:
         self.has_interactions = False
         self.interaction_count = 0
         self.has_unattended = False
+        self.has_confirmed_unattended = False
         self._unattended_since = None
         self.segment_idx += 1
         
         logging.info(f"🎬 Started new segment: {os.path.basename(filename)}")
 
-    def add_frame(self, frame, active_interactions=None, any_met_duration=False, unattended_present=False):
+    def add_frame(self, frame, active_interactions=None, any_met_duration=False, unattended_present=False, confirmed_unattended_present=False):
         """Add frame to current segment and track interactions.
         any_met_duration: mark segment as having interactions only if any pair met the min duration.
+        confirmed_unattended_present: track if confirmed unattended customers are present.
         """
-        # Start a new segment if this is the first frame
-        if self.writer is None:
-            self._start_new_segment()
-        
-        # Write the frame
-        self.writer.write(frame)
-        self.frames_written += 1
-        
-        # Track if this frame has qualifying interactions (met min duration)
+        try:
+            # Start a new segment if this is the first frame
+            if self.writer is None:
+                self._start_new_segment()
+            
+            # Validate frame before writing
+            if frame is None or frame.size == 0:
+                logging.warning("⚠️ Invalid frame received, skipping")
+                return
+            
+            # Write the frame with error handling
+            if self.writer and self.writer.isOpened():
+                self.writer.write(frame)
+                self.frames_written += 1
+            else:
+                logging.error("❌ Video writer not available, attempting to restart")
+                self._start_new_segment()
+                if self.writer and self.writer.isOpened():
+                    self.writer.write(frame)
+                    self.frames_written += 1
+            
+            # Track interactions and unattended status
+            self._track_interactions(active_interactions, any_met_duration)
+            self._track_unattended_status(unattended_present, confirmed_unattended_present)
+            
+            # Check if segment duration is reached
+            if time.time() - self.segment_start_time >= SEGMENT_DURATION:
+                self.finalize_segment()
+                self._start_new_segment()
+                
+        except Exception as e:
+            logging.error(f"❌ Error in add_frame: {e}")
+            # Attempt to recover by restarting segment
+            try:
+                self.finalize_segment()
+                self._start_new_segment()
+            except Exception as recovery_error:
+                logging.error(f"❌ Recovery failed: {recovery_error}")
+
+    def _track_interactions(self, active_interactions, any_met_duration):
+        """Track interaction status for the segment."""
         if any_met_duration:
             if not self.has_interactions:
                 self.has_interactions = True
                 logging.info(f"🟢 Qualified interactions detected in segment {self.segment_idx}")
             if active_interactions:
                 self.interaction_count = max(self.interaction_count, len(active_interactions))
-        # Track unattended presence
+
+    def _track_unattended_status(self, unattended_present, confirmed_unattended_present):
+        """Track unattended customer status for the segment."""
         if unattended_present:
-            if not self.has_unattended:
-                self.has_unattended = True
-                self._unattended_since = time.time()
-            # Optionally finalize early to ensure unattended evidence saved promptly
-            if self._unattended_since and (time.time() - self._unattended_since) >= 5:
-                logging.info("⏲️ Unattended detected – finalizing current segment early to save evidence")
-                self.finalize_segment()
-                self._start_new_segment()
+            self._handle_unattended_detection()
         
-        # Check if segment duration is reached
-        if time.time() - self.segment_start_time >= SEGMENT_DURATION:
+        if confirmed_unattended_present:
+            self._handle_confirmed_unattended()
+
+    def _handle_unattended_detection(self):
+        """Handle unattended customer detection."""
+        if not self.has_unattended:
+            self.has_unattended = True
+            self._unattended_since = time.time()
+        
+        # Optionally finalize early to ensure unattended evidence saved promptly
+        if self._unattended_since and (time.time() - self._unattended_since) >= 5:
+            logging.info("⏲️ Unattended detected – finalizing current segment early to save evidence")
             self.finalize_segment()
             self._start_new_segment()
 
+    def _handle_confirmed_unattended(self):
+        """Handle confirmed unattended customer detection."""
+        if not self.has_confirmed_unattended:
+            self.has_confirmed_unattended = True
+            logging.info("🚨 CONFIRMED unattended customers detected in segment")
+
     def finalize_segment(self):
         """Finalize current segment and decide whether to send to API."""
-        if self.writer:
-            self.writer.release()
-            self.writer = None
+        if not self.writer:
+            return
             
-            if self.segment_file and self.segment_start_time:
-                segment_name = os.path.basename(self.segment_file)
-                duration = time.time() - self.segment_start_time
-                
-                # Only log if we actually wrote frames
-                if self.frames_written > 0:
-                    logging.info(f"💾 Segment saved locally: {segment_name} ({duration:.1f}s, {self.frames_written} frames)")
-                else:
-                    logging.warning(f"⚠️ Empty segment created: {segment_name} (0 frames written)")
-                    # Remove empty segment file
-                    try:
-                        os.remove(self.segment_file)
-                        logging.info(f"🗑️ Removed empty segment: {segment_name}")
-                    except Exception as e:
-                        logging.error(f"❌ Failed to remove empty segment {segment_name}: {e}")
+        self.writer.release()
+        self.writer = None
+        
+        if self.segment_file and self.segment_start_time:
+            self._process_segment_finalization()
+
+    def _process_segment_finalization(self):
+        """Process segment finalization logic."""
+        segment_name = os.path.basename(self.segment_file)
+        duration = time.time() - self.segment_start_time
+        
+        if self.frames_written > 0:
+            self._log_segment_saved(segment_name, duration)
+            self._handle_segment_upload(segment_name)
+        else:
+            self._handle_empty_segment(segment_name)
+
+    def _log_segment_saved(self, segment_name, duration):
+        """Log segment save information."""
+        logging.info(f"💾 Segment saved locally: {segment_name} ({duration:.1f}s, {self.frames_written} frames)")
+
+    def _handle_empty_segment(self, segment_name):
+        """Handle empty segment removal."""
+        logging.warning(f"⚠️ Empty segment created: {segment_name} (0 frames written)")
+        try:
+            os.remove(self.segment_file)
+            logging.info(f"🗑️ Removed empty segment: {segment_name}")
+        except Exception as e:
+            logging.error(f"❌ Failed to remove empty segment {segment_name}: {e}")
+
+    def _handle_segment_upload(self, segment_name):
+        """Handle segment upload logic."""
+        if self.has_confirmed_unattended:
+            self._upload_confirmed_unattended_segment(segment_name)
+        else:
+            logging.info("⏭️  Segment has no confirmed unattended customers - keeping locally only")
+
+    def _upload_confirmed_unattended_segment(self, segment_name):
+        """Upload segment with confirmed unattended customers."""
+        logging.info("🚨 Segment contains CONFIRMED unattended customers - UPLOADING VIDEO TO INCIDENT ALERT")
+        try:
+            self._copy_to_unattended_folder()
+            self._report_incident(segment_name)
+        except Exception as e:
+            logging.error(f"❌ Error handling unattended customer segment: {e}")
+
+    def _copy_to_unattended_folder(self):
+        """Copy segment to unattended folder."""
+        base = os.path.basename(self.segment_file)
+        dest = os.path.join(UNATTENDED_SEGMENT_PATH, base)
+        
+        if os.path.abspath(os.path.dirname(self.segment_file)) != os.path.abspath(UNATTENDED_SEGMENT_PATH):
+            self._copy_video_file(self.segment_file, dest)
+
+    def _copy_video_file(self, source, destination):
+        """Copy video file using OpenCV for codec compatibility."""
+        cap = cv2.VideoCapture(source)
+        if cap.isOpened():
+            fps = cap.get(cv2.CAP_PROP_FPS) or self.fps
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            writer = cv2.VideoWriter(destination, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
             
-            # Only process segments that have actual content
-            if self.frames_written > 0:
-                # Handle unattended customer segments - UPLOAD VIDEO TO INCIDENT ALERT
-                if self.has_unattended:
-                    logging.info(f"🚨 Segment contains unattended customers - UPLOADING VIDEO TO INCIDENT ALERT")
-                    try:
-                        # Copy to unattended folder
-                        base = os.path.basename(self.segment_file)
-                        dest = os.path.join(UNATTENDED_SEGMENT_PATH, base)
-                        if os.path.abspath(os.path.dirname(self.segment_file)) != os.path.abspath(UNATTENDED_SEGMENT_PATH):
-                            # Copy using OpenCV re-write to ensure codec compatibility
-                            cap = cv2.VideoCapture(self.segment_file)
-                            if cap.isOpened():
-                                fps = cap.get(cv2.CAP_PROP_FPS) or self.fps
-                                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                                writer = cv2.VideoWriter(dest, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                                ok, frm = cap.read()
-                                while ok:
-                                    writer.write(frm)
-                                    ok, frm = cap.read()
-                                writer.release()
-                                cap.release()
-                                logging.info(f"📁 Copied segment to unattended folder: {dest}")
-                        
-                        # Report unattended customer incident
-                        success = report_video_segment_incident(
-                            video_path=self.segment_file,
-                            incident_type="unattended_customer",
-                            branch_id=BRANCH_ID,
-                            location=LOCATION
-                        )
-                        
-                        if success:
-                            logging.info("✅ Successfully reported unattended customer incident for segment: %s", segment_name)
-                        else:
-                            logging.error(f"❌ Failed to report unattended customer incident for segment: {segment_name}")
-                            
-                    except Exception as e:
-                        logging.error(f"❌ Error handling unattended customer segment: {e}")
-                
-                # Do NOT upload interaction-only segments; keep locally
-                else:
-                    logging.info("⏭️  Segment has no interactions or unattended customers - keeping locally only")
+            ok, frm = cap.read()
+            while ok:
+                writer.write(frm)
+                ok, frm = cap.read()
+            
+            writer.release()
+            cap.release()
+            logging.info(f"📁 Copied segment to unattended folder: {destination}")
+
+    def _report_incident(self, segment_name):
+        """Report unattended customer incident."""
+        # Get timing information for internal logging only
+        timing_details = self._get_unattended_timing_details()
+        
+        success = report_video_segment_incident(
+            video_path=self.segment_file,
+            incident_type="unattended_customer",
+            branch_id=BRANCH_ID,
+            location=LOCATION,
+            timing_details=timing_details
+        )
+        
+        if success:
+            logging.info(f"✅ Successfully reported unattended customer incident for segment: {segment_name}")
+            if timing_details:
+                logging.info(f"   - Internal timing details logged: {timing_details}")
+        else:
+            logging.error(f"❌ Failed to report unattended customer incident for segment: {segment_name}")
+
+    def _get_unattended_timing_details(self):
+        """Get detailed timing information for unattended customers."""
+        # This will be populated by the main loop when calling add_frame
+        return getattr(self, '_unattended_timing_details', {})
+
+    def set_unattended_timing_details(self, timing_details):
+        """Set timing details for unattended customers in this segment."""
+        self._unattended_timing_details = timing_details
 
     def send_to_api(self, filepath):
         """Send video segment to upload endpoint (file + X-API-Key only)."""
@@ -195,5 +280,6 @@ class VideoSegmenter:
             'duration': duration,
             'frames': self.frames_written,
             'has_interactions': self.has_interactions,
-            'interaction_count': self.interaction_count
+            'interaction_count': self.interaction_count,
+            'has_confirmed_unattended': self.has_confirmed_unattended
         } 
