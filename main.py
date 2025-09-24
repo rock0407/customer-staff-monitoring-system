@@ -8,6 +8,7 @@ from config_loader import (VIDEO_SOURCE, LINE_COORDS, HEADLESS, MIN_INTERACTION_
                    INTERACTION_THRESHOLD, LOG_LEVEL, DEBUG_SUMMARY_EVERY_N_FRAMES, UNATTENDED_THRESHOLD,
                    MIN_TRACKING_DURATION_FOR_ALERT, ORGANIZATION_NAME, BRANCH_ID, LOCATION, UNATTENDED_CONFIRMATION_TIMER,
                    TRACK_THRESH, TRACK_BUFFER, MATCH_THRESH, TRACKING_FRAME_RATE, ENABLE_TRACKING_STATS)
+# Removed individual interaction reporting - now using hourly aggregation
 from detector import PersonDetector
 from tracker_bytetrack import PersonTrackerBYTE
 from tracker_simple import SimpleTracker
@@ -266,6 +267,9 @@ logging.warning(f"📊 Interaction logger initialized (min duration: {MIN_INTERA
 video_segmenter = VideoSegmenter(fps=int(fps), frame_size=(frame_w, frame_h))
 logging.warning("🎥 Video segmenter initialized")
 
+# Hourly aggregation is now handled by InteractionLogger
+# No need for separate analytics tracking
+
 start_time = time.monotonic()
 frame_count = 0
 total_people_detected = 0
@@ -392,17 +396,50 @@ while running:
     # Draw the separation line
     if len(line_pts) == 2:
         cv2.line(frame, line_pts[0], line_pts[1], (0, 255, 0), 3)
-        # Add line label
+        # Add area labels positioned in their respective areas
         mid_x = (line_pts[0][0] + line_pts[1][0]) // 2
         mid_y = (line_pts[0][1] + line_pts[1][1]) // 2
-        draw_text_with_background(frame, "STAFF AREA", (mid_x-50, mid_y-20), 
+        
+        # Calculate line direction vector
+        line_dx = line_pts[1][0] - line_pts[0][0]
+        line_dy = line_pts[1][1] - line_pts[0][1]
+        
+        # Calculate perpendicular vector (normalized)
+        perp_x = -line_dy
+        perp_y = line_dx
+        length = (perp_x**2 + perp_y**2)**0.5
+        if length > 0:
+            perp_x /= length
+            perp_y /= length
+        
+        # Position labels in their respective areas
+        # Staff area (positive side) - offset in perpendicular direction
+        staff_offset = 60
+        staff_x = int(mid_x + perp_x * staff_offset)
+        staff_y = int(mid_y + perp_y * staff_offset)
+        
+        # Customer area (negative side) - offset in opposite perpendicular direction
+        customer_offset = 60
+        customer_x = int(mid_x - perp_x * customer_offset)
+        customer_y = int(mid_y - perp_y * customer_offset)
+        
+        # Ensure labels stay within frame bounds
+        staff_x = max(10, min(frame_w - 100, staff_x))
+        staff_y = max(20, min(frame_h - 10, staff_y))
+        customer_x = max(10, min(frame_w - 100, customer_x))
+        customer_y = max(20, min(frame_h - 10, customer_y))
+        
+        draw_text_with_background(frame, "STAFF AREA", (staff_x, staff_y), 
                                  color=(255, 0, 0), bg_color=(0, 0, 0))
-        draw_text_with_background(frame, "CUSTOMER AREA", (mid_x-50, mid_y+20), 
+        draw_text_with_background(frame, "CUSTOMER AREA", (customer_x, customer_y), 
                                  color=(0, 255, 255), bg_color=(0, 0, 0))
 
     # 6. Interaction detection and logging (now returns unattended IDs and confirmed unattended)
     interactions_frame, unattended_ids, confirmed_unattended_ids = interaction_logger.check_and_log(staff, customers, frame_time)
     active_interactions = interaction_logger.get_active_interactions()
+    
+    # Hourly aggregation is now handled automatically by InteractionLogger
+    # No need to manually track completed interactions
     
     # Enhanced logging for timer-based system
     if unattended_ids:
@@ -517,6 +554,8 @@ while running:
     confirmed_count = len(confirmed_unattended_ids) if 'confirmed_unattended_ids' in locals() else 0
     pending_count = len(unattended_ids) - confirmed_count if 'unattended_ids' in locals() else 0
     
+    # Hourly stats and memory monitoring run in background only
+    
     status_text = [
         f"Frame: {frame_count} | Time: {frame_time:.1f}s",
         f"Staff: {len(staff)} | Customers: {len(customers)} | Interactions: {len(active_interactions)}",
@@ -556,6 +595,19 @@ while running:
                 logging.info(f"🎯 Tracking Performance: "
                            f"Efficiency: {tracking_stats.get('track_efficiency', 0):.2f}, "
                            f"Avg Tracks/Frame: {tracking_stats.get('avg_tracks_per_frame', 0):.1f}")
+        
+        # Memory usage monitoring and cleanup (background only)
+        if frame_count % 500 == 0:  # Check every 500 frames (less frequent)
+            try:
+                memory_stats = interaction_logger.get_memory_usage_stats()
+                if memory_stats.get('estimated_memory_kb', 0) > 50:  # Only log if using more than 50KB
+                    logging.info(f"🧠 Memory Usage: {memory_stats.get('estimated_memory_kb', 0)}KB "
+                                f"({memory_stats.get('total_interactions', 0)} interactions)")
+                
+                # Cleanup old data files periodically
+                interaction_logger.hourly_aggregator.cleanup_old_data(hours_to_keep=24)
+            except Exception as e:
+                logging.debug(f"Background memory monitoring: {e}")
 
     # 8. Save video segment with interaction info
     # Only mark segment as having interactions when any pair exceeds MIN_INTERACTION_DURATION
@@ -584,8 +636,18 @@ while running:
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
+    # 10. Check and send hourly analytics (handled by InteractionLogger)
+    interaction_logger.check_and_send_hourly_analytics()
+
 # Graceful shutdown
 logging.info("🛑 Shutting down CSI system...")
+
+try:
+    # Force send any remaining hourly data
+    interaction_logger.force_send_hourly_data()
+    logging.info("✅ Hourly analytics data sent")
+except Exception as e:
+    logging.error(f"❌ Error sending final hourly data: {e}")
 
 try:
     # Finalize last segment

@@ -59,9 +59,26 @@ class PersonTrackerBYTE:
                 track_low_thresh=max(track_thresh - 0.2, 0.1),
                 new_track_thresh=track_thresh,
                 match_thresh_high=min(match_thresh + 0.1, 0.9),
-                match_thresh_low=max(match_thresh - 0.1, 0.1)
+                match_thresh_low=max(match_thresh - 0.1, 0.1),
+                # Critical missing attributes that were causing the error
+                fuse_score=0.5,
+                proximity_thresh=0.5,
+                appearance_thresh=0.25,
+                with_reid=False,
+                fast_reid_config="",
+                fast_reid_weights="",
+                device="",
+                half=False,
+                per_class=False
             )
-            self.tracker = BYTETracker(args, frame_rate=frame_rate)
+            
+            # Try different initialization methods for different ultralytics versions
+            try:
+                self.tracker = BYTETracker(args, frame_rate=frame_rate)
+            except TypeError:
+                # Fallback for older versions that don't accept frame_rate parameter
+                self.tracker = BYTETracker(args)
+                
             print("✅ ByteTracker initialized with optimized parameters:")
             print(f"   - Track threshold: {track_thresh}")
             print(f"   - Track buffer: {track_buffer} frames")
@@ -80,7 +97,17 @@ class PersonTrackerBYTE:
                     track_low_thresh=0.3,
                     new_track_thresh=0.5,
                     match_thresh_high=0.9,
-                    match_thresh_low=0.3
+                    match_thresh_low=0.3,
+                    # Critical missing attributes for fallback
+                    fuse_score=0.5,
+                    proximity_thresh=0.5,
+                    appearance_thresh=0.25,
+                    with_reid=False,
+                    fast_reid_config="",
+                    fast_reid_weights="",
+                    device="",
+                    half=False,
+                    per_class=False
                 )
                 self.tracker = BYTETracker(minimal_args, frame_rate=30)
                 print(f"⚠️ Using minimal ByteTracker parameters due to: {e}")
@@ -101,6 +128,31 @@ class PersonTrackerBYTE:
         self.frame_count += 1
         start_time = time.time()
 
+        # Validate inputs and get valid detections
+        valid_detections = self._validate_and_filter_detections(boxes, confidences, frame)
+        if not valid_detections:
+            return []
+
+        # Update tracker and get results
+        try:
+            update_result = self._update_tracker(valid_detections, frame)
+        except Exception as e:
+            self._log_tracker_error(e, frame, boxes, confidences)
+            return []
+
+        # Process and validate results
+        current_tracks = self._process_tracker_results(update_result)
+        self.total_tracks += len(current_tracks)
+
+        # Log performance periodically
+        self._log_performance_stats(start_time, len(valid_detections), len(current_tracks))
+
+        return current_tracks
+
+    def _validate_and_filter_detections(self, boxes, confidences, frame):
+        """Validate inputs and filter valid detections."""
+        import logging
+        
         # Validate inputs
         if boxes is None or boxes.size == 0:
             boxes = np.zeros((0, 4), dtype=float)
@@ -124,63 +176,114 @@ class PersonTrackerBYTE:
 
         # Update statistics
         self.total_detections += len(valid_detections)
-        
-        if not valid_detections:
-            # No valid detections, return empty tracks
-            return []
+        return valid_detections
 
+    def _update_tracker(self, valid_detections, frame):
+        """Update the ByteTracker with valid detections."""
+        import logging
+        
         # Convert to tracker format efficiently
         xyxy_arr = np.array([det[0] for det in valid_detections], dtype=float)
         conf_arr = np.array([det[1] for det in valid_detections], dtype=float)
         cls_arr = np.zeros(len(valid_detections), dtype=float)  # All person class
 
-        # Use the correct ByteTracker update method for ultralytics 8.0.196
-        try:
-            # Convert to tlwh format (top-left-width-height) as expected by ByteTracker
-            tlwh_arr = np.column_stack([
-                xyxy_arr[:, 0],                           # x1 (top-left x)
-                xyxy_arr[:, 1],                           # y1 (top-left y)
-                xyxy_arr[:, 2] - xyxy_arr[:, 0],         # w (width)
-                xyxy_arr[:, 3] - xyxy_arr[:, 1]          # h (height)
-            ])
-            
-            logging.debug(f"Input xyxy_arr: {xyxy_arr}")
-            logging.debug(f"Converted tlwh_arr: {tlwh_arr}")
-            
-            # Create a results-like object that ByteTracker expects
-            from types import SimpleNamespace
-            results = SimpleNamespace()
-            results.data = np.column_stack([tlwh_arr, conf_arr, cls_arr])  # [x, y, w, h, conf, cls]
-            results.conf = conf_arr
-            results.cls = cls_arr
-            results.xyxy = xyxy_arr
-            results.xywh = tlwh_arr
-            
-            logging.debug(f"Results.data shape: {results.data.shape}")
-            logging.debug(f"Results.data: {results.data}")
-            
-            # New API: update(results, img=None)
-            update_result = self.tracker.update(results, frame)
-            logging.debug(f"Update result type: {type(update_result)}")
-            logging.debug(f"Update result: {update_result}")
-                
-        except Exception as e:
-            logging.error(f"❌ ByteTracker update failed: {e}")
-            return []
+        # Convert to tlwh format (top-left-width-height) as expected by ByteTracker
+        tlwh_arr = np.column_stack([
+            xyxy_arr[:, 0],                           # x1 (top-left x)
+            xyxy_arr[:, 1],                           # y1 (top-left y)
+            xyxy_arr[:, 2] - xyxy_arr[:, 0],         # w (width)
+            xyxy_arr[:, 3] - xyxy_arr[:, 1]          # h (height)
+        ])
+        
+        logging.debug(f"Input xyxy_arr: {xyxy_arr}")
+        logging.debug(f"Converted tlwh_arr: {tlwh_arr}")
+        
+        # Create a results-like object that ByteTracker expects
+        from types import SimpleNamespace
+        results = SimpleNamespace()
+        results.data = np.column_stack([tlwh_arr, conf_arr, cls_arr])  # [x, y, w, h, conf, cls]
+        results.conf = conf_arr
+        results.cls = cls_arr
+        results.xyxy = xyxy_arr
+        results.xywh = tlwh_arr
+        
+        # Debug input data format for first few frames
+        self._debug_input_data(xyxy_arr, tlwh_arr, conf_arr, results)
+        
+        logging.debug(f"Results.data shape: {results.data.shape}")
+        logging.debug(f"Results.data: {results.data}")
+        
+        # New API: update(results, img=None)
+        update_result = self.tracker.update(results, frame)
+        logging.debug(f"Update result type: {type(update_result)}")
+        logging.debug(f"Update result: {update_result}")
+        
+        # Debug coordinate format for first few frames
+        self._debug_output_data(update_result)
+        
+        return update_result
 
+    def _debug_input_data(self, xyxy_arr, tlwh_arr, conf_arr, results):
+        """Debug input data format for first few frames."""
+        import logging
+        if self.frame_count <= 3:
+            logging.info(f"🔍 ByteTracker input debug (frame {self.frame_count}):")
+            logging.info(f"   - Input xyxy_arr: {xyxy_arr}")
+            logging.info(f"   - Input tlwh_arr: {tlwh_arr}")
+            logging.info(f"   - Input conf_arr: {conf_arr}")
+            logging.info(f"   - Results.data: {results.data}")
+
+    def _debug_output_data(self, update_result):
+        """Debug output data format for first few frames."""
+        import logging
+        if self.frame_count <= 5 and hasattr(update_result, '__len__') and len(update_result) > 0:
+            logging.info(f"🔍 ByteTracker output format debug (frame {self.frame_count}):")
+            logging.info(f"   - Result type: {type(update_result)}")
+            if isinstance(update_result, np.ndarray) and update_result.size > 0:
+                logging.info(f"   - Array shape: {update_result.shape}")
+                logging.info(f"   - First track data: {update_result[0] if len(update_result) > 0 else 'Empty'}")
+            elif isinstance(update_result, (list, tuple)):
+                logging.info(f"   - List/tuple length: {len(update_result)}")
+                if len(update_result) > 0:
+                    logging.info(f"   - First element: {update_result[0]}")
+
+    def _log_tracker_error(self, e, frame, boxes, confidences):
+        """Log tracker error with detailed information."""
+        import logging
+        logging.error(f"❌ ByteTracker update failed: {e}")
+        logging.error(f"   - Error type: {type(e).__name__}")
+        logging.error(f"   - Frame shape: {frame.shape if frame is not None else 'None'}")
+        logging.error(f"   - Boxes shape: {boxes.shape if boxes is not None else 'None'}")
+        logging.error(f"   - Confidences shape: {confidences.shape if confidences is not None else 'None'}")
+
+    def _process_tracker_results(self, update_result):
+        """Process tracker results and validate coordinates."""
+        import logging
+        
         # Process results
         current_tracks = self._extract_tracks(update_result)
-        self.total_tracks += len(current_tracks)
+        
+        # Validate all tracks have proper coordinates
+        validated_tracks = []
+        for track in current_tracks:
+            if self._validate_track_coordinates(track):
+                validated_tracks.append(track)
+            else:
+                logging.warning(f"⚠️ Invalid track coordinates detected: {track}")
+        
+        return validated_tracks
 
-        # Log performance periodically
+    def _log_performance_stats(self, start_time, num_detections, num_tracks):
+        """Log performance statistics periodically."""
+        import logging
+        import time
+        
         if self.frame_count % 100 == 0:
             processing_time = time.time() - start_time
-            track_ratio = len(current_tracks) / max(1, len(valid_detections))
+            track_ratio = num_tracks / max(1, num_detections)
             logging.info(f"📊 Tracker Stats - Frame {self.frame_count}: "
-                        f"{len(valid_detections)} detections → {len(current_tracks)} tracks "
+                        f"{num_detections} detections → {num_tracks} tracks "
                         f"(ratio: {track_ratio:.2f}, time: {processing_time:.3f}s)")
-
-        return current_tracks
 
     def _is_valid_detection(self, box, score, img_w, img_h):
         """Validate a single detection."""
@@ -204,6 +307,31 @@ class PersonTrackerBYTE:
             
         return True
 
+    def _validate_track_coordinates(self, track):
+        """Validate that track coordinates are reasonable."""
+        try:
+            if 'id' not in track or 'xyxy' not in track:
+                return False
+            
+            xyxy = track['xyxy']
+            if not isinstance(xyxy, np.ndarray) or xyxy.shape != (4,):
+                return False
+            
+            x1, y1, x2, y2 = xyxy
+            # Check if coordinates are reasonable
+            if x1 >= x2 or y1 >= y2:
+                return False
+            if x1 < 0 or y1 < 0:
+                return False
+            if (x2 - x1) < 5 or (y2 - y1) < 5:  # Too small
+                return False
+            if (x2 - x1) > 2000 or (y2 - y1) > 2000:  # Too large
+                return False
+                
+            return True
+        except Exception:
+            return False
+
     def _extract_tracks(self, update_result):
         """Extract tracks from ByteTracker result."""
         current_tracks = []
@@ -224,25 +352,70 @@ class PersonTrackerBYTE:
         for track_data in update_result:
             try:
                 if len(track_data) >= 6:
-                    # ByteTracker output format is actually: [x1, y1, x2, y2, track_id, conf, ...]
-                    # NOT [x, y, w, h, track_id, conf, ...] as previously assumed
-                    x1, y1, x2, y2, track_id, _ = track_data[:6]
-                    
-                    # Coordinates are already in xyxy format, just ensure they're integers
-                    x1 = max(0, int(x1))
-                    y1 = max(0, int(y1))
-                    x2 = int(x2)
-                    y2 = int(y2)
-                    
-                    current_tracks.append({
-                        'id': int(track_id),
-                        'xyxy': np.array([x1, y1, x2, y2], dtype=int)
-                    })
+                    track = self._extract_single_track_from_array(track_data)
+                    if track:
+                        current_tracks.append(track)
             except Exception as e:
                 import logging
                 logging.debug(f"Error extracting track from array: {e}")
                 continue
         return current_tracks
+
+    def _extract_single_track_from_array(self, track_data):
+        """Extract a single track from array data, trying both coordinate formats."""
+        # ByteTracker output format varies by version - try both formats
+        # Format 1: [x1, y1, x2, y2, track_id, conf, ...]
+        # Format 2: [x, y, w, h, track_id, conf, ...]
+        
+        # Try format 1 first (xyxy)
+        track = self._try_xyxy_format(track_data)
+        if track:
+            return track
+        
+        # Try format 2 (xywh - convert to xyxy)
+        track = self._try_xywh_format(track_data)
+        if track:
+            return track
+        
+        return None
+
+    def _try_xyxy_format(self, track_data):
+        """Try extracting track using xyxy format."""
+        try:
+            x1, y1, x2, y2, track_id, _ = track_data[:6]
+            # Validate coordinates make sense (x2 > x1, y2 > y1)
+            if x2 > x1 and y2 > y1 and x1 >= 0 and y1 >= 0:
+                x1 = max(0, int(x1))
+                y1 = max(0, int(y1))
+                x2 = int(x2)
+                y2 = int(y2)
+                
+                return {
+                    'id': int(track_id),
+                    'xyxy': np.array([x1, y1, x2, y2], dtype=int)
+                }
+        except (ValueError, IndexError, TypeError):
+            pass
+        return None
+
+    def _try_xywh_format(self, track_data):
+        """Try extracting track using xywh format and convert to xyxy."""
+        try:
+            x, y, w, h, track_id, _ = track_data[:6]
+            x1 = max(0, int(x))
+            y1 = max(0, int(y))
+            x2 = int(x + w)
+            y2 = int(y + h)
+            
+            # Validate coordinates
+            if x2 > x1 and y2 > y1 and w > 0 and h > 0:
+                return {
+                    'id': int(track_id),
+                    'xyxy': np.array([x1, y1, x2, y2], dtype=int)
+                }
+        except (ValueError, IndexError, TypeError):
+            pass
+        return None
 
     def _extract_tracks_from_tuple(self, update_result):
         """Extract tracks from tuple format (activated, refind, lost, removed)."""

@@ -46,7 +46,8 @@ class PersonDetector:
             # Use original frame size to avoid coordinate scaling issues
             # Note: YOLO will automatically adjust to multiples of 32
             height, width = frame.shape[:2]
-            return self.model.predict(frame, imgsz=max(height, width), verbose=False)
+            # Force CPU device to avoid CUDA CUBLAS issues
+            return self.model.predict(frame, imgsz=max(height, width), verbose=False, device='cpu')
         except Exception:
             return self.model(frame, imgsz=max(frame.shape[:2]))
 

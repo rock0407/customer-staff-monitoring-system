@@ -1,9 +1,28 @@
+# Core PyTorch (ByteTrack needs torch==1.13.0)
+torch==1.13.0
+torchvision==0.14.0
+
+# Numeric & SciPy stack
+numpy==1.25.2
+scipy==1.9.3
+pandas==1.5.3
+
+# Visualization & plotting
+matplotlib==3.9.4
+seaborn==0.13.2
+
+# OpenCV & Image
 opencv-python==4.10.0.84
-ultralytics==8.3.58
-supervision==0.25.0
-lap==0.4.0
+pillow==11.3.0
+
+# Ultralytics & helpers
+ultralytics==8.0.196
+ultralytics-thop==2.0.15
+thop==0.1.1.post2209072238
+
+# Others
+pyyaml==6.0.2
+tqdm==4.67.1
 requests==2.32.3
-numpy==1.26.4
-scipy==1.11.4
-# ByteTrack tracking
-filterpy==1.4.5
+psutil==7.1.0
+py-cpuinfo==9.0.0

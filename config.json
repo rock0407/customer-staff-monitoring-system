@@ -1,48 +1,95 @@
 {
-    "camera": {
-        "video_source": "rtsp://admin:admin1234567@100.111.167.58:554/cam/realmonitor?channel=4&subtype=0",
-        "line_coords": [[1081, 1031], [1018, 221]],
-        "headless": false
+    "organizations": {
+        "api_url": {
+            "upload_image": "https://obs.prolificapp.in/uploadFile",
+            "report_incident": "https://api.prolificapp.in/api/Addprolificai_alerts",
+            "report_footfall": "https://api.prolificapp.in/api/Addfootfall",
+            "test_api": "https://testapi.prolificapp.in/api/Addfootfall"
+        },
+        "upload_api_key": "vizo361",
+        "Mart77&93": {
+            "name": "Mart77&93 Organization",
+            "description": "Main organization for CSI (Customer-Staff Interaction) monitoring",
+            "active": true,
+            "ip_cameras": {
+                "cam1": {
+                    "camera_config": {
+                        "protocol": "rtsp",
+                        "host": "100.111.167.58",
+                        "port": 554,
+                        "username": "admin",
+                        "password": "admin1234567",
+                        "path": "/cam/realmonitor",
+                        "parameters": {
+                            "channel": "4",
+                            "subtype": "0"
+                        }
+                    },
+                    "status": "available",
+                    "location": "main_entrance",
+                    "branch_id": "MMLAUREL",
+                    "line_coords": [[1081, 1031], [1018, 221]],
+                    "headless": false
+                }
+            },
+            "directories": {
+                "logs": "logs/Mart77&93",
+                "known_faces": "known_faces/Mart77&93",
+                "segments": "segments/",
+                "unattended_segments": "segments_unattended/"
+            },
+            "processing_settings": {
+                "segment_duration": 120,
+                "upload_only_interaction_videos": true,
+                "keep_all_videos_locally": true,
+                "yolo_model_path": "yolov8n.pt"
+            },
+            "interaction_settings": {
+                "min_interaction_duration": 5.0,
+                "interaction_threshold": 650,
+                "unattended_threshold": 30.0,
+                "min_tracking_duration_for_alert": 120.0,
+                "unattended_confirmation_timer": 60.0,
+                "timer_reset_grace_period": 30.0
+            },
+            "tracking_settings": {
+                "track_thresh": 0.3,
+                "track_buffer": 30,
+                "match_thresh": 0.5,
+                "frame_rate": 30,
+                "enable_tracking_stats": true
+            },
+            "logging_settings": {
+                "log_file": "interaction_log.txt",
+                "log_level": "INFO",
+                "debug_summary_every_n_frames": 50
+            }
+        }
     },
-    "api": {
-        "endpoint": "https://your.api/endpoint",
-        "upload_image": "https://obs.prolificapp.in/uploadFile",
-        "report_incident": "https://api.prolificapp.in/api/Addprolificai_alerts",
-        "upload_api_key": "vizo361"
+    "face_recognition_api": {
+        "base_url": "https://videoai.prolificapp.in/face-prediction-multiple",
+        "api_key": "gtyyudhsdkdfhsdfjskfjhfhkjfskj-vizo361",
+        "sample_rate": 1,
+        "current_org": "Mart77&93",
+        "current_branch": "MMLAUREL",
+        "organizations": {
+            "Mart77&93": {
+                "name": "Mart77&93",
+                "branches": {
+                    "MMLAUREL": {
+                        "branch_id": "MMLAUREL",
+                        "location": "main_entrance",
+                        "active": true
+                    }
+                }
+            }
+        }
     },
-    "logging": {
-        "log_file": "interaction_log.txt",
-        "log_level": "INFO",
-        "debug_summary_every_n_frames": 50
-    },
-    "video_processing": {
-        "segment_path": "segments/",
-        "unattended_segment_path": "segments_unattended/",
-        "segment_duration": 120,
-        "upload_only_interaction_videos": true,
-        "keep_all_videos_locally": true
-    },
-    "detection": {
-        "yolo_model_path": "yolov8n.pt"
-    },
-  "tracking": {
-    "track_thresh": 0.3,
-    "track_buffer": 30,
-    "match_thresh": 0.5,
-    "frame_rate": 30,
-    "enable_tracking_stats": true
-  },
-    "interaction_settings": {
-        "min_interaction_duration": 15.0,
-        "interaction_threshold": 650,
-        "unattended_threshold": 30.0,
-        "min_tracking_duration_for_alert": 120.0,
-        "unattended_confirmation_timer": 60.0,
-        "timer_reset_grace_period": 30.0
-    },
-    "organization": {
-        "name": "Mart77&93",
-        "branch_id": "MMLAUREL",
-        "location": "main_entrance"
+    "system_settings": {
+        "current_organization": "Mart77&93",
+        "current_branch": "MMLAUREL",
+        "current_camera": "cam1",
+        "default_timeout": 20,
+        "max_retry_attempts": 3
     }
 }
