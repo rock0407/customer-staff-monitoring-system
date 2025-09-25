@@ -8,7 +8,7 @@ from config_loader import (VIDEO_SOURCE, LINE_COORDS, HEADLESS, MIN_INTERACTION_
                    INTERACTION_THRESHOLD, LOG_LEVEL, DEBUG_SUMMARY_EVERY_N_FRAMES, UNATTENDED_THRESHOLD,
                    MIN_TRACKING_DURATION_FOR_ALERT, ORGANIZATION_NAME, BRANCH_ID, LOCATION, UNATTENDED_CONFIRMATION_TIMER,
                    TRACK_THRESH, TRACK_BUFFER, MATCH_THRESH, TRACKING_FRAME_RATE, ENABLE_TRACKING_STATS)
-# Removed individual interaction reporting - now using hourly aggregation
+# Now using per-interaction footfall API calls
 from detector import PersonDetector
 from tracker_bytetrack import PersonTrackerBYTE
 from tracker_simple import SimpleTracker
@@ -52,29 +52,7 @@ def setup_quiet_logging():
 
 setup_quiet_logging()
 
-# Initialize CSV file for bounding box data
-def init_bbox_csv():
-    """Initialize CSV file for bounding box data."""
-    with open('bounding_boxes.csv', 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(['timestamp', 'frame', 'time', 'person_id', 'category', 'centroid_x', 'centroid_y', 'bbox_x1', 'bbox_y1', 'bbox_x2', 'bbox_y2'])
-
-# Immediate face/image alerts removed per requirements; incidents are reported via segments only
-
-def log_bbox_data(frame_count, frame_time, staff, customers):
-    """Log bounding box data to CSV file."""
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    
-    with open('bounding_boxes.csv', 'a', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        
-        # Log staff data
-        for tid, (cx, cy), xyxy in staff:
-            writer.writerow([timestamp, frame_count, f"{frame_time:.2f}", tid, "STAFF", cx, cy, xyxy[0], xyxy[1], xyxy[2], xyxy[3]])
-        
-        # Log customer data
-        for tid, (cx, cy), xyxy in customers:
-            writer.writerow([timestamp, frame_count, f"{frame_time:.2f}", tid, "CUSTOMER", cx, cy, xyxy[0], xyxy[1], xyxy[2], xyxy[3]])
+# Removed: Bounding box CSV logging - not needed for production
 
 # Graceful shutdown flag
 running = True
@@ -277,8 +255,7 @@ total_people_detected = 0
 logging.warning("🚀 Starting video processing...")
 
 # Initialize CSV file for bounding box data
-init_bbox_csv()
-logging.warning("📊 Bounding box CSV file initialized: bounding_boxes.csv")
+# Removed: Bounding box CSV initialization - not needed for production
 
 while running:
     ret, frame = cap.read()
@@ -390,8 +367,7 @@ while running:
                 cust_info.append(f"Customer {tid}: pos=({cx},{cy}), bbox=({xyxy[0]},{xyxy[1]},{xyxy[2]},{xyxy[3]})")
             logging.info(f"👥 Customers ({len(customers)}): {' | '.join(cust_info)}")
 
-    # Log bounding box data to CSV for analysis
-    log_bbox_data(frame_count, frame_time, staff, customers)
+    # Removed: Bounding box CSV logging - not needed for production
 
     # Draw the separation line
     if len(line_pts) == 2:
@@ -510,38 +486,9 @@ while running:
             draw_text_with_background(frame, info_text, (mid_x-40, mid_y), 
                                      color=line_color, bg_color=(0, 0, 0))
             
-            # Draw zone indicators around people
-            zone_colors = {'close': (0, 255, 0), 'medium': (0, 255, 255), 'far': (0, 165, 255)}
-            zone_color = zone_colors.get(zone, (128, 128, 128))
-            
-            # Draw zone circles around staff and customer
-            cv2.circle(frame, staff_pos, 15, zone_color, 1)  # Inner zone
-            cv2.circle(frame, staff_pos, 30, zone_color, 1)  # Outer zone
-            cv2.circle(frame, cust_pos, 15, zone_color, 1)   # Inner zone
-            cv2.circle(frame, cust_pos, 30, zone_color, 1)   # Outer zone
+            # Removed: Zone indicators - not needed for production display
 
-    # Draw potential interactions (high scores but not yet active)
-    for sid, spt, sbbox in staff:
-        for cid, cpt, cbbox in customers:
-            # Skip if this is already an active interaction
-            if (sid, cid) in active_interactions:
-                continue
-            
-            dist = np.linalg.norm(np.array(spt) - np.array(cpt))
-            score, scores, zone = interaction_logger.calculate_interaction_score(sbbox, cbbox, dist, spt, cpt)
-            
-            # Show potential interactions with high scores
-            if score > 0.3:  # Show potential interactions
-                # Draw dashed line for potential interaction
-                line_color = (128, 128, 128)  # Gray for potential
-                cv2.line(frame, spt, cpt, line_color, 1, cv2.LINE_AA)
-                
-                # Show score at midpoint
-                mid_x = (spt[0] + cpt[0]) // 2
-                mid_y = (spt[1] + cpt[1]) // 2
-                score_text = f"{score:.2f}"
-                draw_text_with_background(frame, score_text, (mid_x, mid_y), 
-                                         color=line_color, bg_color=(0, 0, 0), font_scale=0.4)
+    # Removed: Potential interaction lines and scores - not needed for production display
 
     # 7. Add visual timer overlays for each customer
     _add_customer_timer_overlays(frame, customers, interaction_logger, frame_time)
@@ -557,12 +504,8 @@ while running:
     # Hourly stats and memory monitoring run in background only
     
     status_text = [
-        f"Frame: {frame_count} | Time: {frame_time:.1f}s",
         f"Staff: {len(staff)} | Customers: {len(customers)} | Interactions: {len(active_interactions)}",
-        f"Unattended: {confirmed_count} confirmed, {pending_count} pending",
-        f"Segment: {segment_info['segment_idx']} ({segment_info['duration']:.1f}s)",
-        f"Timer: {UNATTENDED_CONFIRMATION_TIMER}s confirmation",
-        f"Threshold: {UNATTENDED_THRESHOLD}s unattended"
+        f"Unattended: {confirmed_count} confirmed, {pending_count} pending"
     ]
     
     y_offset = 30
@@ -571,43 +514,7 @@ while running:
                                  color=(255, 255, 255), bg_color=(0, 0, 0))
         y_offset += 25
 
-    # Periodic debug snapshot for diagnosis
-    if frame_count % max(1, int(DEBUG_SUMMARY_EVERY_N_FRAMES)) == 0:
-        # Calculate processing performance
-        elapsed_time = time.monotonic() - start_time
-        fps_actual = frame_count / elapsed_time if elapsed_time > 0 else 0
-        
-        logging.info(
-            f"📌 Snapshot f={frame_count} t={frame_time:.1f}s staff={len(staff)} cust={len(customers)} "
-            f"active={len(active_interactions)} unattended={len(unattended_ids)} fps={fps_actual:.1f}"
-        )
-        
-        # Memory usage warning
-        import psutil
-        memory_percent = psutil.virtual_memory().percent
-        if memory_percent > 80:
-            logging.warning(f"⚠️ High memory usage: {memory_percent:.1f}%")
-        
-        # Tracking performance monitoring
-        if ENABLE_TRACKING_STATS:
-            tracking_stats = person_tracker.get_tracking_stats()
-            if tracking_stats:
-                logging.info(f"🎯 Tracking Performance: "
-                           f"Efficiency: {tracking_stats.get('track_efficiency', 0):.2f}, "
-                           f"Avg Tracks/Frame: {tracking_stats.get('avg_tracks_per_frame', 0):.1f}")
-        
-        # Memory usage monitoring and cleanup (background only)
-        if frame_count % 500 == 0:  # Check every 500 frames (less frequent)
-            try:
-                memory_stats = interaction_logger.get_memory_usage_stats()
-                if memory_stats.get('estimated_memory_kb', 0) > 50:  # Only log if using more than 50KB
-                    logging.info(f"🧠 Memory Usage: {memory_stats.get('estimated_memory_kb', 0)}KB "
-                                f"({memory_stats.get('total_interactions', 0)} interactions)")
-                
-                # Cleanup old data files periodically
-                interaction_logger.hourly_aggregator.cleanup_old_data(hours_to_keep=24)
-            except Exception as e:
-                logging.debug(f"Background memory monitoring: {e}")
+    # Removed: Debug snapshot logging - not needed for production
 
     # 8. Save video segment with interaction info
     # Only mark segment as having interactions when any pair exceeds MIN_INTERACTION_DURATION
@@ -636,18 +543,12 @@ while running:
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
-    # 10. Check and send hourly analytics (handled by InteractionLogger)
-    interaction_logger.check_and_send_hourly_analytics()
 
 # Graceful shutdown
 logging.info("🛑 Shutting down CSI system...")
 
-try:
-    # Force send any remaining hourly data
-    interaction_logger.force_send_hourly_data()
-    logging.info("✅ Hourly analytics data sent")
-except Exception as e:
-    logging.error(f"❌ Error sending final hourly data: {e}")
+# Note: Hourly analytics removed - now using per-interaction footfall API calls
+logging.info("✅ Per-interaction footfall API calls enabled")
 
 try:
     # Finalize last segment

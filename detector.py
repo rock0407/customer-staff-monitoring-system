@@ -1,7 +1,8 @@
 from ultralytics import YOLO
 import numpy as np
 import logging
-from config_loader import YOLO_MODEL_PATH
+import torch
+from config_loader import YOLO_MODEL_PATH, USE_GPU, GPU_DEVICE, HALF_PRECISION
 
 class PersonDetector:
     def __init__(self, model_path=YOLO_MODEL_PATH):
@@ -13,7 +14,18 @@ class PersonDetector:
             return original_load(*args, **kwargs)
         torch.load = patched_load
         
-        self.model = YOLO(model_path)
+        # Initialize YOLO model with GPU if available and configured
+        if USE_GPU and torch.cuda.is_available():
+            device = GPU_DEVICE
+            self.model = YOLO(model_path)
+            self.model.to(device)
+            if HALF_PRECISION:
+                self.model.half()  # Use FP16 for better performance
+            logging.info(f"🚀 YOLO model loaded on {device.upper()} with {'FP16' if HALF_PRECISION else 'FP32'} precision")
+        else:
+            device = 'cpu'
+            self.model = YOLO(model_path)
+            logging.info(f"🚀 YOLO model loaded on {device.upper()} (GPU disabled or unavailable)")
 
     def detect(self, frame):
         """Run YOLO detection and return Nx4 xyxy and confidences arrays for person class.
@@ -46,8 +58,9 @@ class PersonDetector:
             # Use original frame size to avoid coordinate scaling issues
             # Note: YOLO will automatically adjust to multiples of 32
             height, width = frame.shape[:2]
-            # Force CPU device to avoid CUDA CUBLAS issues
-            return self.model.predict(frame, imgsz=max(height, width), verbose=False, device='cpu')
+            # Use configured device for better performance
+            device = GPU_DEVICE if USE_GPU and torch.cuda.is_available() else 'cpu'
+            return self.model.predict(frame, imgsz=max(height, width), verbose=False, device=device)
         except Exception:
             return self.model(frame, imgsz=max(frame.shape[:2]))
 

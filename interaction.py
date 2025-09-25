@@ -3,7 +3,6 @@ import time
 import logging
 import cv2
 from config_loader import LOG_FILE, INTERACTION_THRESHOLD, UNATTENDED_THRESHOLD, MIN_TRACKING_DURATION_FOR_ALERT, UNATTENDED_CONFIRMATION_TIMER, TIMER_RESET_GRACE_PERIOD
-from hourly_aggregator import HourlyInteractionAggregator
 
 class InteractionLogger:
     def __init__(self, log_file=LOG_FILE, threshold=INTERACTION_THRESHOLD, min_duration=2.0):
@@ -35,8 +34,6 @@ class InteractionLogger:
         self.movement_threshold = 20  # Maximum movement in pixels to consider "stationary"
         self.facing_threshold = 0.7   # Cosine similarity threshold for facing direction
         
-        # Initialize hourly aggregator for analytics (1 hour for production)
-        self.hourly_aggregator = HourlyInteractionAggregator(aggregation_interval_hours=1.0)
         # Hysteresis + debounce controls (seconds)
         self.start_score = 0.30      # score to begin considering start
         self.end_score = 0.20        # score to remain active; below this risks ending
@@ -307,15 +304,20 @@ class InteractionLogger:
                 logging.info(f"✅ INTERACTION COMPLETED: Staff {k[0]} & Customer {k[1]} | Duration: {duration:.1f}s | Status: VALID")
                 self.customer_last_attended[k[1]] = frame_time
                 
-                # NEW: Add interaction to hourly aggregator instead of sending individually
+                # NEW: Report interaction immediately to footfall API
                 try:
-                    self.hourly_aggregator.add_interaction(
+                    from footfall import report_interaction_analytics
+                    success = report_interaction_analytics(
                         staff_id=k[0],
                         customer_id=k[1],
                         duration_seconds=duration
                     )
+                    if success:
+                        logging.info(f"✅ Footfall API call successful for Staff {k[0]} & Customer {k[1]}")
+                    else:
+                        logging.error(f"❌ Footfall API call failed for Staff {k[0]} & Customer {k[1]}")
                 except Exception as e:
-                    logging.error(f"❌ Failed to add interaction to hourly aggregator: {e}")
+                    logging.error(f"❌ Failed to call footfall API: {e}")
             else:
                 logging.info(f"❌ INTERACTION TOO SHORT: Staff {k[0]} & Customer {k[1]} | Duration: {duration:.1f}s | Status: IGNORED (min: {self.min_duration}s)")
 
@@ -531,33 +533,3 @@ class InteractionLogger:
                     timing_info["summary"]["pending_confirmation"] += 1
         
         return timing_info
-
-    def check_and_send_hourly_analytics(self):
-        """Check if it's time to send hourly analytics and send if needed."""
-        try:
-            self.hourly_aggregator.check_and_send_aggregated_data()
-        except Exception as e:
-            logging.error(f"❌ Error checking hourly analytics: {e}")
-
-    def get_hourly_stats(self):
-        """Get current hourly statistics."""
-        try:
-            return self.hourly_aggregator.get_current_hour_stats()
-        except Exception as e:
-            logging.error(f"❌ Error getting hourly stats: {e}")
-            return {}
-
-    def force_send_hourly_data(self):
-        """Force send current hour's data (useful for shutdown)."""
-        try:
-            self.hourly_aggregator.force_send_current_data()
-        except Exception as e:
-            logging.error(f"❌ Error force sending hourly data: {e}")
-
-    def get_memory_usage_stats(self):
-        """Get memory usage statistics for the hourly aggregator."""
-        try:
-            return self.hourly_aggregator.get_memory_usage_stats()
-        except Exception as e:
-            logging.error(f"❌ Error getting memory usage stats: {e}")
-            return {} 

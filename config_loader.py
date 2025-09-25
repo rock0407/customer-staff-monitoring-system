@@ -63,6 +63,9 @@ KEEP_ALL_VIDEOS_LOCALLY = current_org_config['processing_settings']['keep_all_vi
 
 # Detection configuration
 YOLO_MODEL_PATH = current_org_config['processing_settings']['yolo_model_path']
+USE_GPU = current_org_config['processing_settings'].get('use_gpu', True)
+GPU_DEVICE = current_org_config['processing_settings'].get('gpu_device', 'cuda:0')
+HALF_PRECISION = current_org_config['processing_settings'].get('half_precision', True)
 
 # Tracking settings
 TRACK_THRESH = current_org_config['tracking_settings']['track_thresh']

@@ -29,7 +29,7 @@
                     "location": "main_entrance",
                     "branch_id": "MMLAUREL",
                     "line_coords": [[1081, 1031], [1018, 221]],
-                    "headless": false
+                    "headless": true
                 }
             },
             "directories": {
@@ -42,7 +42,17 @@
                 "segment_duration": 120,
                 "upload_only_interaction_videos": true,
                 "keep_all_videos_locally": true,
-                "yolo_model_path": "yolov8n.pt"
+                "yolo_model_path": "yolov8n.pt",
+                "use_gpu": true,
+                "gpu_device": "cuda:0",
+                "half_precision": true,
+                "batch_size": 1,
+                "max_det": 100,
+                "conf_threshold": 0.5,
+                "frame_skip": 1,
+                "target_fps": 3,
+                "max_cpu_usage": 70,
+                "max_gpu_memory_gb": 16
             },
             "interaction_settings": {
                 "min_interaction_duration": 5.0,
