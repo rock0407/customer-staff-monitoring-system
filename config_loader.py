@@ -82,6 +82,11 @@ MIN_TRACKING_DURATION_FOR_ALERT = current_org_config['interaction_settings']['mi
 UNATTENDED_CONFIRMATION_TIMER = current_org_config['interaction_settings']['unattended_confirmation_timer']
 TIMER_RESET_GRACE_PERIOD = current_org_config['interaction_settings']['timer_reset_grace_period']
 
+# Queue settings
+MIN_QUEUE_DURATION = current_org_config['queue_settings']['min_queue_duration']
+QUEUE_VALIDATION_PERIOD = current_org_config['queue_settings']['queue_validation_period']
+QUEUE_STABILITY_THRESHOLD = current_org_config['queue_settings']['queue_stability_threshold']
+
 # Organization information
 ORGANIZATION_NAME = current_org_config['name']
 BRANCH_ID = current_camera_config['branch_id']

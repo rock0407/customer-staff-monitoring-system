@@ -2,7 +2,10 @@ import numpy as np
 import time
 import logging
 import cv2
-from config_loader import LOG_FILE, INTERACTION_THRESHOLD, UNATTENDED_THRESHOLD, MIN_TRACKING_DURATION_FOR_ALERT, UNATTENDED_CONFIRMATION_TIMER, TIMER_RESET_GRACE_PERIOD
+from datetime import datetime, timedelta
+from config_loader import LOG_FILE, INTERACTION_THRESHOLD, UNATTENDED_THRESHOLD, MIN_TRACKING_DURATION_FOR_ALERT, UNATTENDED_CONFIRMATION_TIMER, TIMER_RESET_GRACE_PERIOD, MIN_QUEUE_DURATION, QUEUE_VALIDATION_PERIOD, QUEUE_STABILITY_THRESHOLD
+from metrics_collector import MetricsCollector
+from extended_queue_tracker import ExtendedQueueTracker
 
 class InteractionLogger:
     def __init__(self, log_file=LOG_FILE, threshold=INTERACTION_THRESHOLD, min_duration=2.0):
@@ -23,7 +26,35 @@ class InteractionLogger:
         # Tracking stability improvements
         self.customer_position_history = {}  # customer_id -> recent positions for stability
         self.customer_id_mapping = {}  # old_id -> new_id for ID persistence
+        self.original_to_current = {}  # original_id -> latest current id for display/overlay
         self.position_history_length = 5  # Keep last 5 positions
+        
+        # Bounding box storage for unattended customers
+        self.customer_bounding_boxes = {}  # customer_id -> latest bounding box coordinates
+        self.unattended_customer_boxes = {}  # customer_id -> bounding box for confirmed unattended
+        
+        # Track completed interactions for immediate upload
+        self.completed_interactions = []  # List of completed interactions waiting for upload
+        
+        # ID change rate limiting
+        self.last_id_change_time = 0
+        self.id_change_cooldown = 1.0  # Minimum 1 second between ID changes
+        
+        # Initialize metrics collector
+        self.metrics_collector = MetricsCollector("analytics_metrics.json")
+        
+        # Initialize extended queue tracker for hours-long scenarios
+        self.extended_queue_tracker = ExtendedQueueTracker(max_queue_capacity=50, cleanup_interval=300)
+        
+        # Track queue times with validation
+        self.customer_queue_start = {}  # customer_id -> queue start time
+        self.customer_queue_end = {}      # customer_id -> queue end time
+        self.customer_queue_validation = {}  # customer_id -> validation start time
+        self.customer_queue_confirmed = set()  # Set of confirmed queue customers
+        
+        # Track unattended times
+        self.customer_unattended_start = {}  # customer_id -> unattended start time
+        self.customer_unattended_end = {}    # customer_id -> unattended end time
         
         self.history_length = 10  # Number of frames to track for movement analysis
         self.proximity_zones = {
@@ -36,19 +67,13 @@ class InteractionLogger:
         
         # Hysteresis + debounce controls (seconds)
         self.start_score = 0.30      # score to begin considering start
-        self.end_score = 0.20        # score to remain active; below this risks ending
+        self.end_score = 0.15        # score to remain active; below this risks ending
         self.start_min_time = 0.50   # must stay above start_score at least this long to start
         self.end_grace = 0.50        # allow brief dips below end_score before ending
         # State for debounce/end-grace
         self._prestart_since = {}    # (sid,cid) -> time when score first exceeded start_score
         self._end_grace_since = {}   # (sid,cid) -> time when score first dropped below end_score
-        logging.info("🔧 Enhanced Interaction Logger initialized:")
-        logging.info(f"   - Distance threshold: {self.threshold}px")
-        logging.info(f"   - Min duration: {self.min_duration}s")
-        logging.info(f"   - Unattended confirmation timer: {self.unattended_confirmation_timer}s")
-        logging.info(f"   - Proximity zones: {self.proximity_zones}")
-        logging.info(f"   - Movement threshold: {self.movement_threshold}px")
-        logging.info(f"   - Facing threshold: {self.facing_threshold}")
+        logging.info("🔧 Interaction Logger initialized - background processing mode")
 
     def calculate_bbox_overlap(self, bbox1, bbox2):
         """Calculate intersection over union (IoU) between two bounding boxes."""
@@ -197,19 +222,86 @@ class InteractionLogger:
 
     def _handle_id_changes(self, current_customer_positions):
         """Handle potential customer ID changes by comparing positions."""
+        # Track which old customers we've already processed to avoid duplicate mappings
+        processed_old_customers = set()
+        
         for old_cid, old_positions in self.customer_position_history.items():
-            if old_cid not in current_customer_positions and old_positions:
-                self._find_id_mapping(old_cid, old_positions[-1], current_customer_positions)
+            if old_cid not in current_customer_positions and old_positions and old_cid not in processed_old_customers:
+                # Check if we already have a mapping for this old customer
+                already_mapped = any(mapped_old == old_cid for mapped_old in self.customer_id_mapping.values())
+                if not already_mapped:
+                    self._find_id_mapping(old_cid, old_positions[-1], current_customer_positions)
+                    processed_old_customers.add(old_cid)
 
     def _find_id_mapping(self, old_cid, last_known_pos, current_positions):
         """Find if old customer moved to a new ID."""
+        # Rate limiting: don't process ID changes too frequently
+        current_time = time.time()
+        if current_time - self.last_id_change_time < self.id_change_cooldown:
+            logging.debug(f"⏰ ID change rate limited for {old_cid} (cooldown: {self.id_change_cooldown}s)")
+            return
+            
+        # Additional safety check: don't process if we already have too many mappings
+        if len(self.customer_id_mapping) > 50:
+            logging.debug(f"⚠️ Too many ID mappings ({len(self.customer_id_mapping)}), skipping ID change for {old_cid}")
+            return
+            
+        # Find the closest new customer ID that hasn't been mapped yet
+        best_match = None
+        best_distance = float('inf')
+        
         for new_cid, new_pos in current_positions.items():
-            if new_cid not in self.customer_position_history:
-                distance = np.linalg.norm(np.array(last_known_pos) - np.array(new_pos))
-                if distance < 100:  # Within 100 pixels
-                    self.customer_id_mapping[new_cid] = old_cid
-                    logging.info(f"🔄 Customer ID changed: {old_cid} -> {new_cid} (distance: {distance:.1f}px)")
-                    break
+            # Skip if this new ID is already mapped to someone else
+            if new_cid in self.customer_id_mapping:
+                continue
+                
+            # Skip if this new ID already has position history (it's not really new)
+            if new_cid in self.customer_position_history:
+                continue
+                
+            distance = np.linalg.norm(np.array(last_known_pos) - np.array(new_pos))
+            
+            # Use much stricter distance threshold and find the closest match
+            if distance < 30 and distance < best_distance:  # Further reduced from 50px to 30px
+                best_match = new_cid
+                best_distance = distance
+        
+        # Only create one mapping for the best match, and only if distance is very small
+        if best_match is not None and best_distance < 20:  # Only for very close matches
+            self.customer_id_mapping[best_match] = old_cid
+            self.last_id_change_time = current_time  # Update rate limiting timestamp
+            logging.info(f"🔄 Customer ID changed: {old_cid} -> {best_match} (distance: {best_distance:.1f}px)")
+            # Maintain reverse mapping for display purposes
+            try:
+                original_id = self.get_original_customer_id(old_cid)
+            except Exception:
+                original_id = old_cid
+            self.original_to_current[original_id] = best_match
+            
+            # Clean up old mappings to prevent memory growth
+            self._cleanup_old_mappings()
+        elif best_match is not None:
+            logging.debug(f"🔍 ID change candidate too far: {old_cid} -> {best_match} (distance: {best_distance:.1f}px > 20px)")
+
+    def _cleanup_old_mappings(self):
+        """Clean up old mappings to prevent memory growth."""
+        # Keep only recent mappings (last 100 entries)
+        if len(self.customer_id_mapping) > 100:
+            # Remove oldest entries
+            items_to_remove = list(self.customer_id_mapping.items())[:-50]  # Keep last 50
+            for key, _ in items_to_remove:
+                del self.customer_id_mapping[key]
+            logging.debug(f"🧹 Cleaned up {len(items_to_remove)} old customer ID mappings")
+
+    def get_original_customer_id(self, cid):
+        """Resolve the original (stable) customer id by following mapping chains."""
+        visited = set()
+        current = cid
+        # customer_id_mapping stores new_id -> previous_id
+        while current in self.customer_id_mapping and current not in visited:
+            visited.add(current)
+            current = self.customer_id_mapping[current]
+        return current
 
     def _update_position_history(self, current_customer_positions):
         """Update position history for current customers."""
@@ -254,15 +346,16 @@ class InteractionLogger:
 
     def _cleanup_customer_interactions(self, cid):
         """Clean up interactions involving a specific customer."""
+        original_cid = self.get_original_customer_id(cid)
         interactions_to_remove = []
         for (sid, cid_key) in self.active_interactions:
-            if cid_key == cid:
+            if cid_key == original_cid:
                 interactions_to_remove.append((sid, cid_key))
         
         for interaction in interactions_to_remove:
             self.active_interactions.pop(interaction, None)
             self.interaction_history.pop(interaction, None)
-            self.person_history.pop(cid, None)
+            self.person_history.pop(original_cid, None)
 
     # --- Complexity reduction helpers ---
     def _pair_iter(self, staff, customers):
@@ -270,7 +363,9 @@ class InteractionLogger:
             for cid, cpt, cbbox in customers:
                 dist = np.linalg.norm(np.array(spt) - np.array(cpt))
                 score, scores, zone = self.calculate_interaction_score(sbbox, cbbox, dist, spt, cpt)
-                yield sid, cid, spt, cpt, dist, score, scores, zone
+                # Normalize customer id to original for stable interaction keys
+                original_cid = self.get_original_customer_id(cid)
+                yield sid, original_cid, spt, cpt, dist, score, scores, zone
 
     def _maybe_start(self, key, sid, cid, score, frame_time, spt, cpt, dist, zone, scores, interactions):
         if score < self.start_score:
@@ -282,9 +377,7 @@ class InteractionLogger:
         self.active_interactions[key] = frame_time
         self.interaction_history[key] = (spt, cpt)
         interactions.append(key)
-        logging.info(f"🟢 NEW INTERACTION: Staff {sid} & Customer {cid}")
-        logging.info(f"   Distance: {dist:.1f}px | Zone: {zone} | Score: {score:.2f}")
-        logging.info(f"   Scores: Distance={scores['distance']:.2f}, Overlap={scores['overlap']:.2f}, Facing={scores['facing']:.2f}, Movement={scores['movement']:.2f}")
+        logging.info(f"🟢 NEW INTERACTION: Staff {sid} & Customer {cid} (Score: {score:.2f})")
         self._prestart_since.pop(key, None)
 
     def _should_remain_active(self, key, score, frame_time):
@@ -301,8 +394,17 @@ class InteractionLogger:
             duration = frame_time - start_time
             if duration >= self.min_duration:
                 self.log_interaction(k[0], k[1], start_time, frame_time, duration, "VALID")
-                logging.info(f"✅ INTERACTION COMPLETED: Staff {k[0]} & Customer {k[1]} | Duration: {duration:.1f}s | Status: VALID")
+                logging.info(f"✅ INTERACTION COMPLETED: Staff {k[0]} & Customer {k[1]} | Duration: {duration:.1f}s")
                 self.customer_last_attended[k[1]] = frame_time
+                
+                # Add to completed interactions list for immediate upload
+                self.completed_interactions.append({
+                    'staff_id': k[0],
+                    'customer_id': k[1],
+                    'duration': duration,
+                    'start_time': start_time,
+                    'end_time': frame_time
+                })
                 
                 # NEW: Report interaction immediately to footfall API
                 try:
@@ -318,8 +420,9 @@ class InteractionLogger:
                         logging.error(f"❌ Footfall API call failed for Staff {k[0]} & Customer {k[1]}")
                 except Exception as e:
                     logging.error(f"❌ Failed to call footfall API: {e}")
+                
             else:
-                logging.info(f"❌ INTERACTION TOO SHORT: Staff {k[0]} & Customer {k[1]} | Duration: {duration:.1f}s | Status: IGNORED (min: {self.min_duration}s)")
+                logging.debug(f"❌ INTERACTION TOO SHORT: Staff {k[0]} & Customer {k[1]} | Duration: {duration:.1f}s")
 
     def _compute_unattended_with_timer(self, customers, frame_time):
         """
@@ -329,22 +432,28 @@ class InteractionLogger:
         unattended_ids = []
         confirmed_unattended_ids = []
         
-        for cid, _pos, _bbox in customers:
+        for cid, _pos, bbox in customers:
+            # Store bounding box data for all customers
+            self.customer_bounding_boxes[cid] = bbox.copy()
+            
             if self._should_process_customer(cid, frame_time):
                 result = self._process_customer_unattended_status(cid, frame_time)
                 if result:
                     unattended_ids.append(cid)
                     if result == 'confirmed':
                         confirmed_unattended_ids.append(cid)
+                        # Store bounding box for confirmed unattended customers
+                        self.unattended_customer_boxes[cid] = bbox.copy()
         
         self._log_unattended_summary(unattended_ids, confirmed_unattended_ids)
         return unattended_ids, confirmed_unattended_ids
 
     def _should_process_customer(self, cid, frame_time):
         """Check if customer should be processed for unattended detection."""
-        if cid not in self.customer_first_detected:
-            self.customer_first_detected[cid] = frame_time
-            logging.info(f"👤 Customer {cid} first detected at {frame_time:.1f}s")
+        original_cid = self.get_original_customer_id(cid)
+        if original_cid not in self.customer_first_detected:
+            self.customer_first_detected[original_cid] = frame_time
+            logging.debug(f"👤 Customer {original_cid} first detected at {frame_time:.1f}s")
             return False
         
         # Validate frame_time is reasonable
@@ -352,7 +461,7 @@ class InteractionLogger:
             logging.warning(f"⚠️ Invalid frame_time {frame_time} for customer {cid}")
             return False
             
-        tracking_duration = frame_time - self.customer_first_detected[cid]
+        tracking_duration = frame_time - self.customer_first_detected[original_cid]
         
         # Validate tracking duration is reasonable
         if tracking_duration < 0:
@@ -363,24 +472,25 @@ class InteractionLogger:
 
     def _process_customer_unattended_status(self, cid, frame_time):
         """Process unattended status for a single customer."""
-        last_attended = self.customer_last_attended.get(cid)
+        original_cid = self.get_original_customer_id(cid)
+        last_attended = self.customer_last_attended.get(original_cid)
         if last_attended is None:
-            self.customer_last_attended[cid] = frame_time
+            self.customer_last_attended[original_cid] = frame_time
             return None
         
         unattended_duration = frame_time - last_attended
         
         if unattended_duration >= UNATTENDED_THRESHOLD:
-            return self._handle_unattended_customer(cid, frame_time, unattended_duration)
+            return self._handle_unattended_customer(original_cid, frame_time, unattended_duration)
         else:
-            self._handle_attended_customer(cid, unattended_duration)
+            self._handle_attended_customer(original_cid, unattended_duration)
             return None
 
     def _handle_unattended_customer(self, cid, frame_time, unattended_duration):
         """Handle customer who has been unattended for threshold time."""
         if cid not in self.unattended_timers:
             self.unattended_timers[cid] = frame_time
-            logging.info(f"⏱️ Started unattended timer for customer {cid} (unattended for {unattended_duration:.1f}s)")
+            logging.debug(f"⏱️ Started unattended timer for customer {cid} (unattended for {unattended_duration:.1f}s)")
         
         timer_duration = frame_time - self.unattended_timers[cid]
         if timer_duration >= self.unattended_confirmation_timer:
@@ -388,7 +498,7 @@ class InteractionLogger:
                 self._confirm_unattended_customer(cid, timer_duration, unattended_duration)
             return 'confirmed'
         else:
-            self._log_confirmation_period(cid, timer_duration)
+            # Timer still running - confirmation pending
             return 'pending'
 
     def _confirm_unattended_customer(self, cid, timer_duration, unattended_duration):
@@ -398,21 +508,24 @@ class InteractionLogger:
         logging.warning(f"🚨 CONFIRMED UNATTENDED: Customer {cid} - Timer completed ({timer_duration:.1f}s)")
         logging.warning(f"   - Total unattended time: {unattended_duration:.1f}s")
         logging.warning(f"   - Tracking duration: {tracking_duration:.1f}s")
+        
+        # Start tracking the confirmed unattended customer
+        self.start_unattended_tracking(cid)
 
-    def _log_confirmation_period(self, cid, timer_duration):
-        """Log confirmation period status."""
-        remaining_time = self.unattended_confirmation_timer - timer_duration
-        logging.info(f"⏳ Customer {cid} in confirmation period: {remaining_time:.1f}s remaining")
+# _log_confirmation_period function removed - confirmation period logging no longer needed
 
     def _handle_attended_customer(self, cid, unattended_duration):
         """Handle customer who was recently attended."""
         if unattended_duration < TIMER_RESET_GRACE_PERIOD:
             if cid in self.unattended_timers:
-                logging.info(f"✅ Customer {cid} attended recently - resetting unattended timer")
+                logging.debug(f"✅ Customer {cid} attended recently - resetting unattended timer")
                 del self.unattended_timers[cid]
             if cid in self.confirmed_unattended:
-                logging.info(f"✅ Customer {cid} attended recently - removing from confirmed unattended")
+                logging.debug(f"✅ Customer {cid} attended recently - removing from confirmed unattended")
                 self.confirmed_unattended.discard(cid)
+            # If customer was being tracked as unattended, end the tracking
+            if cid in self.customer_unattended_start:
+                self.end_unattended_tracking(cid)
         else:
             # Customer has been unattended for too long, don't reset timers
             # This prevents false resets when customer briefly appears attended
@@ -431,18 +544,18 @@ class InteractionLogger:
         self._stabilize_customer_tracking(customers, frame_time)
         
         interactions = []
-        for sid, cid, spt, cpt, dist, score, scores, zone in self._pair_iter(staff, customers):
-            key = (sid, cid)
+        for sid, original_cid, spt, cpt, dist, score, scores, zone in self._pair_iter(staff, customers):
+            key = (sid, original_cid)
             if key in self.active_interactions:
                 if self._should_remain_active(key, score, frame_time):
                     interactions.append(key)
                     duration = frame_time - self.active_interactions[key]
                     if duration >= 1.0:
-                        logging.info(f"🟡 INTERACTION CONTINUES: Staff {sid} & Customer {cid} | Duration: {duration:.1f}s | Score: {score:.2f}")
+                        logging.info(f"🟡 INTERACTION CONTINUES: Staff {sid} & Customer {original_cid} | Duration: {duration:.1f}s | Score: {score:.2f}")
                     # Update last attended time when customer is in interaction
-                    self.customer_last_attended[cid] = frame_time
+                    self.customer_last_attended[original_cid] = frame_time
             else:
-                self._maybe_start(key, sid, cid, score, frame_time, spt, cpt, dist, zone, scores, interactions)
+                self._maybe_start(key, sid, original_cid, score, frame_time, spt, cpt, dist, zone, scores, interactions)
 
         self._finalize_ended(interactions, frame_time)
         
@@ -451,21 +564,47 @@ class InteractionLogger:
         
         return interactions, unattended_ids, confirmed_unattended_ids
 
-    def log_interaction(self, staff_id, cust_id, start, end, duration, status="VALID"):
-        """Log interaction to file with detailed information."""
+    def log_interaction(self, staff_id, cust_id, start, end, duration, status="VALID", video_evidence=None):
+        """Log interaction to file with detailed information and optional video evidence."""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.log_file, 'a') as f:
             f.write(f"[{timestamp}] {status} | Staff {staff_id} & Customer {cust_id} | Start: {start:.2f}s | End: {end:.2f}s | Duration: {duration:.2f}s\n")
+        
+        # Add to metrics collector (local JSON storage only)
+        # Convert relative timestamps to actual datetime objects
+        current_time = datetime.now()
+        interaction_start = current_time - timedelta(seconds=(end - start))
+        interaction_end = current_time
+        self.metrics_collector.add_interaction_time(staff_id, cust_id, interaction_start, interaction_end, video_evidence)
+        
+        # Update daily summary
+        self.metrics_collector.update_daily_summary()
+
+    def link_video_evidence_to_interaction(self, staff_id, customer_id, video_evidence):
+        """Link video evidence to an existing interaction"""
+        return self.metrics_collector.link_video_evidence_to_interaction(staff_id, customer_id, video_evidence)
+    
+    def link_video_evidence_to_unattended(self, customer_id, video_evidence):
+        """Link video evidence to an existing unattended event"""
+        return self.metrics_collector.link_video_evidence_to_unattended(customer_id, video_evidence)
 
     def get_active_interactions(self):
-        """Get currently active interactions for visualization."""
-        return list(self.active_interactions.keys())
+        """Get currently active interactions for visualization.
+        Returns pairs using the latest current customer id when available so overlays match.
+        """
+        result = []
+        for sid, original_cid in self.active_interactions.keys():
+            display_cid = self.original_to_current.get(original_cid, original_cid)
+            result.append((sid, display_cid))
+        return result
 
     def get_interaction_duration(self, staff_id, cust_id, current_time=None):
         """Get current duration of an active interaction using the same timebase as check_and_log.
         Pass current_time=frame_time from the main loop for consistent results.
         """
-        key = (staff_id, cust_id)
+        # Normalize provided customer id to original for lookup
+        original_cid = self.get_original_customer_id(cust_id)
+        key = (staff_id, original_cid)
         if key in self.active_interactions:
             start_t = self.active_interactions[key]
             if current_time is not None:
@@ -533,3 +672,157 @@ class InteractionLogger:
                     timing_info["summary"]["pending_confirmation"] += 1
         
         return timing_info
+
+    def get_unattended_customer_bounding_boxes(self, unattended_ids, confirmed_unattended_ids):
+        """Get bounding box data for unattended customers."""
+        bounding_boxes = {
+            'unattended': {},
+            'confirmed_unattended': {}
+        }
+        
+        for cid in unattended_ids:
+            if cid in self.customer_bounding_boxes:
+                bounding_boxes['unattended'][cid] = self.customer_bounding_boxes[cid].tolist()
+        
+        for cid in confirmed_unattended_ids:
+            if cid in self.unattended_customer_boxes:
+                bounding_boxes['confirmed_unattended'][cid] = self.unattended_customer_boxes[cid].tolist()
+        
+        return bounding_boxes
+
+    def get_customer_timing_details(self, customer_ids, frame_time):
+        """Get detailed timing information for specific customers."""
+        timing_details = {}
+        for cid in customer_ids:
+            if cid in self.customer_first_detected:
+                original_cid = self.get_original_customer_id(cid)
+                last_attended = self.customer_last_attended.get(cid, self.customer_first_detected[original_cid])
+                timing_details[cid] = {
+                    'original_id': original_cid,
+                    'first_detected': self.customer_first_detected[original_cid],
+                    'last_attended': last_attended,
+                    'unattended_duration': frame_time - last_attended,
+                    'is_confirmed': cid in self.confirmed_unattended,
+                    'timer_duration': frame_time - self.unattended_timers[cid] if cid in self.unattended_timers else 0
+                }
+        return timing_details
+
+    def get_completed_interactions(self):
+        """Get and clear completed interactions for immediate upload."""
+        completed = self.completed_interactions.copy()
+        self.completed_interactions.clear()
+        return completed
+
+    # QUEUE TIME TRACKING METHODS
+    def start_customer_queue(self, customer_id):
+        """Start queue validation for customer with extended tracking"""
+        current_time = datetime.now()
+        
+        if customer_id not in self.customer_queue_validation and customer_id not in self.customer_queue_start:
+            # Start validation period
+            self.customer_queue_validation[customer_id] = current_time
+            logging.debug(f"⏳ Queue validation started for Customer {customer_id}")
+        elif customer_id in self.customer_queue_validation:
+            # Check if validation period completed
+            validation_start = self.customer_queue_validation[customer_id]
+            if (current_time - validation_start).total_seconds() >= QUEUE_VALIDATION_PERIOD:
+                # Queue confirmed - start actual queue tracking
+                self.customer_queue_start[customer_id] = validation_start  # Use validation start time
+                self.customer_queue_confirmed.add(customer_id)
+                del self.customer_queue_validation[customer_id]
+                
+                # Add to extended queue tracker
+                queue_result = self.extended_queue_tracker.add_customer_to_queue(customer_id)
+                logging.info(f"✅ Queue confirmed for Customer {customer_id} - {queue_result['message']}")
+        # If already in queue_start, do nothing (already confirmed)
+
+    def end_customer_queue(self, customer_id):
+        """End queue time tracking for customer with extended analytics"""
+        # Clean up validation if customer was in validation phase
+        if customer_id in self.customer_queue_validation:
+            del self.customer_queue_validation[customer_id]
+            logging.debug(f"⏭️ Queue validation cancelled for Customer {customer_id}")
+            return
+            
+        if customer_id in self.customer_queue_start:
+            queue_start = self.customer_queue_start[customer_id]
+            queue_end = datetime.now()
+            queue_duration = (queue_end - queue_start).total_seconds()
+            
+            # Remove from extended queue tracker
+            queue_result = self.extended_queue_tracker.remove_customer_from_queue(customer_id)
+            
+            # Only record if queue duration meets minimum threshold
+            if queue_duration >= MIN_QUEUE_DURATION:
+                self.metrics_collector.add_queue_time(customer_id, queue_start, queue_end)
+                logging.info(f"✅ Valid queue recorded: Customer {customer_id}, Duration: {queue_duration:.2f}s")
+                
+                # Record service time for analytics
+                if queue_duration > 0:
+                    self.extended_queue_tracker.record_service_time(queue_duration)
+            else:
+                logging.debug(f"⏭️ Queue too short: Customer {customer_id}, Duration: {queue_duration:.2f}s (min: {MIN_QUEUE_DURATION}s)")
+            
+            # Clean up
+            del self.customer_queue_start[customer_id]
+            self.customer_queue_confirmed.discard(customer_id)
+            
+            # Clean up extended data periodically
+            self.extended_queue_tracker.cleanup_extended_data()
+
+    # UNATTENDED TIME TRACKING METHODS
+    def start_unattended_tracking(self, customer_id):
+        """Start tracking unattended time for customer"""
+        self.customer_unattended_start[customer_id] = datetime.now()
+        logging.info(f"🚨 Unattended tracking started for Customer {customer_id}")
+
+    def end_unattended_tracking(self, customer_id):
+        """End unattended time tracking for customer"""
+        if customer_id in self.customer_unattended_start:
+            unattended_start = self.customer_unattended_start[customer_id]
+            unattended_end = datetime.now()
+            unattended_duration = (unattended_end - unattended_start).total_seconds()
+            
+            # Only log meaningful unattended durations (≥5 seconds to filter out noise)
+            if unattended_duration >= 5.0:
+                # Record unattended time metric
+                self.metrics_collector.add_unattended_time(customer_id, unattended_start, unattended_end)
+                logging.info(f"✅ Unattended tracking ended for Customer {customer_id} - Duration: {unattended_duration:.1f}s")
+            else:
+                logging.debug(f"🔇 Skipped logging brief unattended duration for Customer {customer_id}: {unattended_duration:.1f}s")
+            
+            # Clean up
+            del self.customer_unattended_start[customer_id]
+            
+            # Remove from confirmed unattended set
+            self.confirmed_unattended.discard(customer_id)
+
+    # METRICS AND ANALYTICS METHODS
+    def get_metrics_summary(self):
+        """Get current metrics summary"""
+        return self.metrics_collector.get_metrics_summary()
+
+    def generate_analytics_report(self):
+        """Generate comprehensive analytics report"""
+        return self.metrics_collector.generate_analytics_report()
+    
+    def get_extended_queue_analytics(self):
+        """Get extended queue analytics for hours-long scenarios"""
+        return self.extended_queue_tracker.get_extended_analytics()
+    
+    def get_queue_status(self):
+        """Get current queue status with positions and wait times"""
+        return self.extended_queue_tracker.get_queue_status()
+    
+    def get_customer_queue_info(self, customer_id):
+        """Get detailed queue information for a specific customer"""
+        return self.extended_queue_tracker.get_customer_queue_info(customer_id)
+    
+    def export_extended_analytics(self, filename=None):
+        """Export extended queue analytics to JSON file"""
+        return self.extended_queue_tracker.export_analytics(filename)
+
+    def update_daily_summary(self):
+        """Update daily summary metrics"""
+        self.metrics_collector.update_daily_summary()
+

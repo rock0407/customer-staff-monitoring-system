@@ -15,6 +15,7 @@ logging.basicConfig(
 DEFAULT_FOOTFALL_API_URL = "https://api.prolificapp.in/api/Addfootfall"
 DEFAULT_TEST_API_URL = "https://testapi.prolificapp.in/api/Addfootfall"
 FOOTFALL_TYPE = "customer_staff_interaction"  # Consistent footfall type for ALL data - never changes
+MINIMUM_DURATION_SECONDS = 10  # Minimum practical duration for footfall reporting
 
 # Interaction Analytics API Functions
 def report_interaction_analytics(staff_id, customer_id, duration_seconds):
@@ -30,15 +31,21 @@ def report_interaction_analytics(staff_id, customer_id, duration_seconds):
     api_url = API_URLS.get('report_footfall', DEFAULT_FOOTFALL_API_URL)
     incident_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    # Use actual duration since interactions are now pre-filtered to be >= 10 seconds
+    try:
+        stable_duration = int(float(duration_seconds))
+    except Exception:
+        stable_duration = MINIMUM_DURATION_SECONDS
+
     # Minimal payload - only core footfall API fields
     payload = {
         "branch_id": BRANCH_ID,
         "timestamp": incident_time,
         "camera_name": "cam1",
-        "footfall_count_period": int(duration_seconds),
+        "footfall_count_period": int(stable_duration),
         "footfall_type": FOOTFALL_TYPE,  # Always "customer_staff_interaction"
-        "current_value": int(duration_seconds),
-        "average_value": int(duration_seconds),
+        "current_value": int(stable_duration),
+        "average_value": int(stable_duration),
         "created_by": incident_time
     }
     
@@ -47,7 +54,7 @@ def report_interaction_analytics(staff_id, customer_id, duration_seconds):
         response = requests.post(api_url, json=payload, headers=headers, timeout=10)
         
         if response.status_code in [200, 201]:
-            logging.info(f"✅ Interaction analytics sent: Staff {staff_id} & Customer {customer_id} | Duration: {duration_seconds:.1f}s")
+            logging.info(f"✅ Interaction analytics sent: Staff {staff_id} & Customer {customer_id} | Duration: {stable_duration}s")
             return True
         else:
             logging.error(f"❌ Failed to send interaction analytics. Status: {response.status_code}, Response: {response.text}")

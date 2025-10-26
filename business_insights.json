@@ -1,0 +1,107 @@
+{
+  "generated_at": "2025-10-24 17:39:24",
+  "customer_satisfaction_score": 95,
+  "service_quality_metrics": {
+    "service_availability": {
+      "score": "Good",
+      "interactions_per_hour": 0.3,
+      "staff_engagement": "Active"
+    },
+    "response_time": {
+      "avg_interaction_duration": "4.4 minutes",
+      "efficiency_rating": "Excellent",
+      "customer_wait_time": "Low"
+    },
+    "customer_attention": {
+      "unattended_incidents": 1,
+      "attention_quality": "Needs Improvement",
+      "customer_abandonment_risk": "Low"
+    }
+  },
+  "operational_insights": {
+    "peak_hours": {
+      "message": "No hourly data available"
+    },
+    "staff_workload": {
+      "total_customer_served": 8,
+      "avg_service_time": "4.4 minutes",
+      "workload_assessment": "Light",
+      "efficiency_rating": "High"
+    },
+    "customer_flow": {
+      "total_customer_activity": 9,
+      "served_customers": 8,
+      "unattended_customers": 1,
+      "service_rate": "88.9%",
+      "customer_satisfaction_risk": "Low"
+    },
+    "service_gaps": {
+      "identified_gaps": [
+        "1 customers left unattended"
+      ],
+      "priority_level": "Medium",
+      "recommended_actions": [
+        "Implement proactive customer engagement protocols"
+      ]
+    }
+  },
+  "staff_performance": {
+    "staff_622": {
+      "interactions_handled": 1,
+      "avg_service_time": "3.8 minutes",
+      "efficiency_rating": "Good",
+      "customer_load": "Moderate"
+    },
+    "staff_4095": {
+      "interactions_handled": 1,
+      "avg_service_time": "0.3 minutes",
+      "efficiency_rating": "Excellent",
+      "customer_load": "Moderate"
+    },
+    "staff_4642": {
+      "interactions_handled": 1,
+      "avg_service_time": "0.3 minutes",
+      "efficiency_rating": "Excellent",
+      "customer_load": "Moderate"
+    },
+    "staff_1906": {
+      "interactions_handled": 1,
+      "avg_service_time": "0.5 minutes",
+      "efficiency_rating": "Excellent",
+      "customer_load": "Moderate"
+    },
+    "staff_11008": {
+      "interactions_handled": 1,
+      "avg_service_time": "0.3 minutes",
+      "efficiency_rating": "Excellent",
+      "customer_load": "Moderate"
+    },
+    "staff_12336": {
+      "interactions_handled": 1,
+      "avg_service_time": "0.3 minutes",
+      "efficiency_rating": "Excellent",
+      "customer_load": "Moderate"
+    },
+    "staff_12787": {
+      "interactions_handled": 2,
+      "avg_service_time": "14.7 minutes",
+      "efficiency_rating": "Needs Improvement",
+      "customer_load": "Moderate"
+    }
+  },
+  "customer_experience_issues": {
+    "total_issues": 0,
+    "critical_issues": 0,
+    "issues": []
+  },
+  "recommendations": {
+    "priority_recommendations": [
+      "Implement customer engagement protocols to reduce unattended time"
+    ],
+    "all_recommendations": [
+      "Implement customer engagement protocols to reduce unattended time"
+    ],
+    "implementation_timeline": "Within 1 week"
+  },
+  "alert_conditions": []
+}

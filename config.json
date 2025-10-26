@@ -8,17 +8,17 @@
         },
         "upload_api_key": "vizo361",
         "Mart77&93": {
-            "name": "Mart77&93 Organization",
-            "description": "Main organization for CSI (Customer-Staff Interaction) monitoring",
+            "name": "Mart77&93",
+            "description": "Main organization for CSI",
             "active": true,
             "ip_cameras": {
                 "cam1": {
-                    "camera_config": {
+                     "camera_config": {
                         "protocol": "rtsp",
                         "host": "100.111.167.58",
                         "port": 554,
                         "username": "admin",
-                        "password": "admin1234567",
+                        "password": "admin12345678@",
                         "path": "/cam/realmonitor",
                         "parameters": {
                             "channel": "4",
@@ -26,9 +26,18 @@
                         }
                     },
                     "status": "available",
-                    "location": "main_entrance",
+                    "location": "MART77",
                     "branch_id": "MMLAUREL",
-                    "line_coords": [[1081, 1031], [1018, 221]],
+                    "line_coords":  [
+                        [
+                            1081,
+                            1031
+                        ],
+                        [
+                            1018,
+                            221
+                        ]
+                    ],
                     "headless": true
                 }
             },
@@ -55,12 +64,17 @@
                 "max_gpu_memory_gb": 16
             },
             "interaction_settings": {
-                "min_interaction_duration": 5.0,
-                "interaction_threshold": 650,
+                "min_interaction_duration": 15.0,
+                "interaction_threshold": 700,
                 "unattended_threshold": 30.0,
                 "min_tracking_duration_for_alert": 120.0,
-                "unattended_confirmation_timer": 60.0,
-                "timer_reset_grace_period": 30.0
+                "unattended_confirmation_timer": 30.0,
+                "timer_reset_grace_period": 15.0
+            },
+            "queue_settings": {
+                "min_queue_duration": 8.0,
+                "queue_validation_period": 3.0,
+                "queue_stability_threshold": 0.7
             },
             "tracking_settings": {
                 "track_thresh": 0.3,
@@ -76,30 +90,12 @@
             }
         }
     },
-    "face_recognition_api": {
-        "base_url": "https://videoai.prolificapp.in/face-prediction-multiple",
-        "api_key": "gtyyudhsdkdfhsdfjskfjhfhkjfskj-vizo361",
-        "sample_rate": 1,
-        "current_org": "Mart77&93",
-        "current_branch": "MMLAUREL",
-        "organizations": {
-            "Mart77&93": {
-                "name": "Mart77&93",
-                "branches": {
-                    "MMLAUREL": {
-                        "branch_id": "MMLAUREL",
-                        "location": "main_entrance",
-                        "active": true
-                    }
-                }
-            }
-        }
-    },
     "system_settings": {
         "current_organization": "Mart77&93",
         "current_branch": "MMLAUREL",
         "current_camera": "cam1",
-        "default_timeout": 20,
+        "default_timeout": 60,
+        "video_upload_timeout": 300,
         "max_retry_attempts": 3
     }
 }

@@ -3,7 +3,6 @@ import os
 import time
 import requests
 import logging
-from datetime import datetime
 from config_loader import VIDEO_SEGMENT_PATH, SEGMENT_DURATION, UNATTENDED_SEGMENT_PATH, API_URLS, UPLOAD_API_KEY, ORGANIZATION_NAME, BRANCH_ID, LOCATION
 from api_handler import report_video_segment_incident
 import numpy as np
@@ -25,20 +24,16 @@ class VideoSegmenter:
         self.has_unattended = False
         self.has_confirmed_unattended = False
         
-        # Interaction event tracking with validation periods
+        # Interaction event tracking
         self.interaction_start_time = None
         self.interaction_end_time = None
         self.current_interaction_pairs = set()  # Track active interaction pairs
-        self.interaction_validation_start = None  # When interaction first detected
-        self.interaction_validation_duration = 15.0  # 15 seconds validation period
         
-        # Unattended event tracking with validation periods
+        # Unattended event tracking
         self.unattended_start_time = None
         self.unattended_end_time = None
         self._unattended_since = None
         self._unattended_absent_frames = 0
-        self.unattended_validation_start = None  # When unattended first detected
-        self.unattended_validation_duration = 30.0  # 30 seconds validation period
         
         # Buffer for pre-interaction frames
         self.frame_buffer = []
@@ -59,10 +54,6 @@ class VideoSegmenter:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         reason_suffix = reason.replace("_", "-")
         filename = os.path.join(VIDEO_SEGMENT_PATH, f'segment_{self.segment_idx}_{timestamp}_{reason_suffix}.mp4')
-        
-        # Ensure we have an absolute path
-        filename = os.path.abspath(filename)
-        logging.info(f"📁 Creating segment file: {filename}")
         
         # Try codecs in order of preference
         codecs = ['mp4v', 'avc1']
@@ -104,11 +95,6 @@ class VideoSegmenter:
         self.unattended_end_time = None
         self._unattended_since = None
         self._unattended_absent_frames = 0
-        
-        # Reset validation tracking
-        self.interaction_validation_start = None
-        self.unattended_validation_start = None
-        self.current_interaction_pairs = set()
         
         # Clear frame buffer
         self.frame_buffer = []
@@ -182,32 +168,27 @@ class VideoSegmenter:
                 logging.error(f"❌ Recovery failed: {recovery_error}")
 
     def _check_interaction_events(self, active_interactions, any_met_duration, current_time):
-        """Check for interaction start/end events with validation period handling."""
+        """Check for interaction start/end events."""
         if any_met_duration and active_interactions:
-            # Interaction has met minimum duration - check if we should start segment
+            # New interaction started
             current_pairs = set(active_interactions)
             if not self.current_interaction_pairs:
-                # First valid interaction - start segment immediately
-                self.current_interaction_pairs = current_pairs
+                # First interaction in this segment
                 return "start"
             elif current_pairs != self.current_interaction_pairs:
-                # Different interaction pairs - start new segment
-                self.current_interaction_pairs = current_pairs
+                # Different interaction pairs
                 return "start"
         elif self.current_interaction_pairs and not active_interactions:
             # All interactions ended
-            self.current_interaction_pairs = set()
             return "end"
         
         return None
 
     def _check_unattended_events(self, unattended_present, confirmed_unattended_present, current_time):
-        """Check for unattended customer start/end events with validation period handling."""
+        """Check for unattended customer start/end events."""
         if confirmed_unattended_present and not self.has_confirmed_unattended:
-            # Confirmed unattended customer detected - start segment immediately
             return "start"
         elif self.has_confirmed_unattended and not confirmed_unattended_present:
-            # Confirmed unattended customer is no longer present - end segment
             return "end"
         
         return None
@@ -215,13 +196,6 @@ class VideoSegmenter:
     def _handle_interaction_start(self, frame, current_time):
         """Handle start of interaction event."""
         if not self.has_interactions:
-            # If we have a confirmed unattended segment, give it a minimum time before interrupting
-            if self.has_confirmed_unattended and self.segment_start_time:
-                segment_duration = current_time - self.segment_start_time
-                if segment_duration < 5.0:  # Give unattended segments at least 5 seconds
-                    logging.info(f"⏳ Delaying interaction segment start to allow unattended segment to develop (current: {segment_duration:.1f}s)")
-                    return
-            
             # Start new segment for this interaction
             self.finalize_segment()  # Finalize current segment if any
             self._start_new_segment("interaction_start")
@@ -236,10 +210,11 @@ class VideoSegmenter:
             
             self.has_interactions = True
             self.interaction_start_time = current_time
-            logging.info(f"🎯 INTERACTION SEGMENT STARTED: Valid Staff-Customer interaction detected (≥{self.interaction_validation_duration}s)")
+            logging.info(f"🎯 INTERACTION SEGMENT STARTED: Staff-Customer interaction detected")
         
         # Update current interaction pairs
-        self.current_interaction_pairs = set()
+        if hasattr(self, 'current_interaction_pairs'):
+            self.current_interaction_pairs = set()
 
     def _handle_interaction_end(self, current_time):
         """Handle end of interaction event."""
@@ -269,7 +244,7 @@ class VideoSegmenter:
             
             self.has_confirmed_unattended = True
             self.unattended_start_time = current_time
-            logging.info(f"🚨 UNATTENDED SEGMENT STARTED: Confirmed unattended customer detected (≥{self.unattended_validation_duration}s)")
+            logging.info(f"🚨 UNATTENDED SEGMENT STARTED: Confirmed unattended customer detected")
 
     def _handle_unattended_end(self, current_time):
         """Handle end of unattended customer event."""
@@ -320,13 +295,6 @@ class VideoSegmenter:
 
     def _handle_short_segment(self, segment_name):
         """Handle segments that are too short to be meaningful."""
-        # Special handling for unattended segments - don't delete them even if short
-        if "unattended" in segment_name and self.has_confirmed_unattended:
-            logging.info(f"📁 Keeping short unattended segment: {segment_name} (contains confirmed unattended customer)")
-            # Copy to unattended folder even if short
-            self._copy_to_unattended_folder()
-            return
-        
         try:
             os.remove(self.segment_file)
             logging.info(f"🗑️ Removed short segment: {segment_name}")
@@ -401,14 +369,14 @@ class VideoSegmenter:
             logging.info(f"📁 Copied segment to unattended folder: {destination}")
 
     def _report_incident(self, segment_name, incident_type="unattended_customer"):
-        """Report incident with accurate timing information and link to analytics."""
+        """Report incident with accurate timing information."""
         # Get timing information for internal logging only
         timing_details = self._get_unattended_timing_details()
         
         # Get bounding box details for unattended customers
         bounding_box_details = self._get_unattended_bounding_box_details()
         
-        result = report_video_segment_incident(
+        success = report_video_segment_incident(
             video_path=self.segment_file,
             incident_type=incident_type,
             branch_id=BRANCH_ID,
@@ -417,77 +385,12 @@ class VideoSegmenter:
             bounding_box_details=bounding_box_details
         )
         
-        if result.get("success", False):
+        if success:
             logging.info(f"✅ Successfully reported {incident_type} incident for segment: {segment_name}")
             if timing_details:
                 logging.info(f"   - Internal timing details logged: {timing_details}")
-            
-            # Store video evidence for linking to analytics
-            video_evidence = result.get("video_evidence")
-            if video_evidence:
-                self._uploaded_filename = video_evidence.get("uploaded_filename", segment_name)
-                self._link_video_evidence_to_analytics(segment_name, incident_type, video_evidence)
         else:
-            error_msg = result.get("error", "Unknown error")
-            logging.error(f"❌ Failed to report {incident_type} incident for segment: {segment_name} - {error_msg}")
-
-    def _link_video_evidence_to_analytics(self, segment_name, incident_type, video_evidence):
-        """Link uploaded video evidence to corresponding analytics entries."""
-        try:
-            # Link to analytics based on incident type
-            if incident_type == "customer_staff_interaction":
-                self._link_to_interaction_analytics(video_evidence)
-            elif incident_type == "unattended_customer":
-                self._link_to_unattended_analytics(video_evidence)
-                
-            logging.info(f"🔗 Video evidence linked to analytics: {segment_name}")
-            
-        except Exception as e:
-            logging.error(f"❌ Failed to link video evidence to analytics: {e}")
-    
-    def _link_to_interaction_analytics(self, video_evidence):
-        """Link video evidence to interaction analytics."""
-        try:
-            # Get the most recent interaction from this segment
-            if hasattr(self, 'interaction_logger') and self.interaction_logger:
-                # Find the most recent completed interaction
-                recent_interactions = getattr(self.interaction_logger, 'completed_interactions', [])
-                if recent_interactions:
-                    # Link to the most recent interaction
-                    most_recent = recent_interactions[-1]
-                    staff_id = most_recent.get('staff_id')
-                    customer_id = most_recent.get('customer_id')
-                    
-                    if staff_id and customer_id:
-                        success = self.interaction_logger.link_video_evidence_to_interaction(
-                            staff_id, customer_id, video_evidence
-                        )
-                        if success:
-                            logging.info(f"🎥 Video evidence linked to interaction: Staff {staff_id} & Customer {customer_id}")
-                        else:
-                            logging.warning(f"⚠️ Could not link video evidence to interaction: Staff {staff_id} & Customer {customer_id}")
-        except Exception as e:
-            logging.error(f"❌ Failed to link to interaction analytics: {e}")
-    
-    def _link_to_unattended_analytics(self, video_evidence):
-        """Link video evidence to unattended analytics."""
-        try:
-            # Get unattended customer IDs from this segment
-            timing_details = self._get_unattended_timing_details()
-            if timing_details and 'customers' in timing_details:
-                customers = timing_details['customers']
-                for customer_id, customer_info in customers.items():
-                    if customer_info.get('is_confirmed', False):
-                        if hasattr(self, 'interaction_logger') and self.interaction_logger:
-                            success = self.interaction_logger.link_video_evidence_to_unattended(
-                                customer_id, video_evidence
-                            )
-                            if success:
-                                logging.info(f"🎥 Video evidence linked to unattended event: Customer {customer_id}")
-                            else:
-                                logging.warning(f"⚠️ Could not link video evidence to unattended event: Customer {customer_id}")
-        except Exception as e:
-            logging.error(f"❌ Failed to link to unattended analytics: {e}")
+            logging.error(f"❌ Failed to report {incident_type} incident for segment: {segment_name}")
 
     def _get_unattended_timing_details(self):
         """Get detailed timing information for unattended customers."""
@@ -496,10 +399,6 @@ class VideoSegmenter:
     def set_unattended_timing_details(self, timing_details):
         """Set timing details for unattended customers in this segment."""
         self._unattended_timing_details = timing_details
-    
-    def set_interaction_logger(self, interaction_logger):
-        """Set the interaction logger reference for linking video evidence."""
-        self.interaction_logger = interaction_logger
 
     def set_unattended_bounding_box_details(self, bounding_box_details):
         """Set bounding box details for unattended customers in this segment."""
